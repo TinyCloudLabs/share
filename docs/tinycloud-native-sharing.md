@@ -41,7 +41,7 @@ The approval is good for 60 seconds; if it is not completed in that time Share s
 
 While Share waits for the OpenKey approval (creating a share or revoking one), the page says "Approve in the OpenKey window", offers Cancel (it closes the OpenKey window; the action can be tried again), and says so if the wait runs long. The hint disappears the moment the approval closes. A screen-reader-only status line says the same thing while the window is open; it is replaced when the approval ends ("Share revoked.", or the reason for a cancel, failure or timeout) and cleared on sign-out and when the rows are drawn again, so it never keeps asking for an approval that is over. After a cancel or a timeout no link was created and nothing was revoked.
 
-Revoking stops access; it does not delete anything. The encrypted copy stays in the owner's TinyCloud until the owner deletes it, because Share's session holds no delete grant. Anyone who already downloaded or copied the content keeps their copy. A link can be revoked by anyone who holds it, so the confirmation says so for link shares.
+Revoking stops access; it does not delete anything. The encrypted copy stays in the owner's TinyCloud until the owner deletes it, because Share's session holds no delete grant. Anyone who already downloaded or copied the content keeps their copy. Only the sender can end the link.
 
 The library shows what the owner's node says about each share, not only what this browser saved: a share revoked or expired elsewhere (the account site, the CLI) is shown as Revoked or Expired when the library loads, when "Check status" is pressed and when the tab is focused again. Share never shows a status as confirmed when the node could not be asked; it says statuses may be out of date.
 

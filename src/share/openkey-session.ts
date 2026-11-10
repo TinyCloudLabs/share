@@ -518,7 +518,7 @@ export function shareManifest(address: string): Manifest {
       ...credentialSpacePermissions(),
       ...filesForYouPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(address), actions: ["decrypt", "network.create"], skipPrefix: true },
-      // Option M: one sign-in grant to create the keys of the shares this account publishes (decrypt + key.create on the share/ prefix), built by the SDK.
+      // Decrypt on the share/ prefix, built by the SDK: the node registers a share's policy only for an owner holding decrypt on the share's key.
       ...pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }),
     ],
   };
@@ -528,8 +528,7 @@ export function shareManifest(address: string): Manifest {
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
   allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE],
   allowedServices: ["kv", "vault", "encryption"],
-  // key.create is service-qualified. On the whole network it is refused earlier, by sdk-core's manifest resolution (invalid-manifest), not by this scope; test/share-manifest-key-path.test.ts pins that.
-  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "tinycloud.encryption/key.create"],
+  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create"],
   allowedPathPrefixes: [
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },

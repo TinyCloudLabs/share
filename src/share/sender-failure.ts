@@ -14,7 +14,6 @@ export type SenderFailureKind =
   | "folder"
   | "actions"
   | "upload"
-  | "shareKey"
   | "libraryCopy"
   | "libraryOpen"
   | "offline"
@@ -51,7 +50,6 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   folder: "Pick the folder from your library to share it.",
   actions: "Choose at least one thing they can do.",
   upload: "Upload didn't go through. Nothing was shared — try again.",
-  shareKey: "This sign-in can't create the encryption key for this share. Nothing was shared. Sign out, sign in again, then share it again.",
   libraryCopy: "We couldn't copy that from your library. Try again.",
   libraryOpen: "We couldn't open that folder in your library. Try again.",
   offline: "Couldn't reach TinyCloud. Check your connection and try again.",
