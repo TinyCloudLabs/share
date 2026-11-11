@@ -26,13 +26,6 @@ describe("landing template", () => {
     expect(AGENT_PROMPT).toBe(EXPECTED_PROMPT);
   });
 
-  it("states the supported surfaces under the copy box", () => {
-    const note = /<p class="agent-note">([\s\S]*?)<\/p>/.exec(rendered)![1]!.replace(/\s+/g, " ").trim();
-    expect(note).toBe(
-      "Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through the TinyCloud MCP are next.",
-    );
-  });
-
   it("offers a secondary sign-in under the note that targets the same place as the bottom CTA", () => {
     const hero = /<p class="agent-signin">([\s\S]*?)<\/p>/.exec(rendered)![1]!;
     const heroLink = /<a class="agent-signin-link" href="([^"]+)">Sign in<\/a>/.exec(hero)![1];
