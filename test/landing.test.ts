@@ -29,7 +29,7 @@ describe("landing template", () => {
   it("states the supported surfaces under the copy box", () => {
     const note = /<p class="agent-note">([\s\S]*?)<\/p>/.exec(rendered)![1]!.replace(/\s+/g, " ").trim();
     expect(note).toBe(
-      "Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through the TinyCloud MCP are next.",
+      "Works with coding agents like Claude Code, Codex and OpenCode, and with chat apps through the TinyCloud MCP.",
     );
   });
 
