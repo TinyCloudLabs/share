@@ -16,7 +16,9 @@ async function save(prefix = LIBRARY_SESSION_PREFIX) {
   const wasm = new NodeWasmBindings();
   const manager = wasm.createSessionManager();
   const keyId = manager.createSessionKey("library-candidate");
-  const jwk = JSON.parse(manager.jwk(keyId));
+  const savedKey = manager.jwk(keyId);
+  if (savedKey === undefined) throw new Error("missing synthetic session key");
+  const jwk = JSON.parse(savedKey);
   const now = Date.now();
   const expiresAt = new Date(now + 60_000).toISOString();
   const prepared = wasm.prepareSession({
