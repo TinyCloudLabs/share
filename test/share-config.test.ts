@@ -23,6 +23,15 @@ describe("Share public routing config", () => {
     expect(redirects).not.toMatch(/^\S+\s+\/\S*\.html\s+200/m);
   });
 
+  it("keeps the share form private from indexes and documents its newcomer flow", () => {
+    const sender = readFileSync("share/index.html", "utf8");
+    const viewer = readFileSync("viewer/index.html", "utf8");
+    expect(sender).toContain('<meta name="robots" content="noindex">');
+    expect(sender).toContain("only me, anyone with the link, or one person by email");
+    expect(sender).toContain("complete link");
+    expect(viewer).toContain('<meta name="robots" content="noindex">');
+  });
+
   it("self-provenances the joined browser artifact against the installed npm betas", () => {
     const gate = readFileSync("test/e2e-prod/joined-gate.mjs", "utf8");
     for (const field of ["shareCommit", "shareTree", "bundleSha256", "publishedPackages", "integrity"]) expect(gate).toContain(field);

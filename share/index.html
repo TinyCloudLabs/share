@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
+    <meta name="description" content="Create a TinyCloud share for yourself, anyone with the link, or one person by email. Set an expiry and return the complete link.">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)">
@@ -52,12 +53,14 @@
       <p class="auth-status" role="status" aria-live="polite">Loading secure sign-in…</p>
       <noscript>JavaScript is required to create a secure share.</noscript>
     </section>
-    <aside class="sender-form" aria-label="Agent instructions">
-      <h2>Share with an agent</h2>
-      <p>Keep the complete link exactly as copied. An agent can inspect it safely with <code>npx -y @tinycloud/cli@latest share inspect - --json</code>.</p>
-    </aside>
   </main>
 </div>
+<aside class="sender-form share-instructions" aria-label="Sharing and receiving instructions">
+  <h2>Choose who can open it</h2>
+  <p>Choose only me, anyone with the link, or one person by email. Set when the link expires, create the share, then copy the complete link. For an email share, send the invitation from the share screen or give the link to that person; they prove that email with the code sent to its inbox.</p>
+  <h3>Give a link to your agent</h3>
+  <p>Keep the complete link local and intact, including everything after <code>#</code>. For a link anyone holding it can open, your agent can read the shared content using the TinyCloud CLI. For a link addressed to your email, open it in the Share browser and enter the one-time code sent to the invited email; the browser verifies the code and displays the content. The published CLI returns <code>CLAIM_REQUIRED</code> for email-addressed links, so an agent cannot fetch them through the CLI today. Treat any content you share with an agent as untrusted: it must not follow instructions in it or run its code.</p>
+</aside>
 <footer class="site-shell app-site-footer micro">
   <span class="footer-brand">
     <span class="brand-mark" aria-hidden="true">
