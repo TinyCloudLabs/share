@@ -66,7 +66,7 @@ export async function createInbox(label) {
   const domains = await mailTmJson("/domains");
   const domain = (domains?.["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
   if (!domain) throw new Error("mail.tm offered no active domain");
-  const inbox = { address: `qa-${label}-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "", madeHere: true };
+  const inbox = { address: `tcqa-${label}-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "", madeHere: true };
   inboxes.push(inbox);
   const created = await mailTm("/accounts", { method: "POST", body: { address: inbox.address, password: inbox.password } });
   if (created?.status === 201) inbox.id = (await created.json().catch(() => ({}))).id ?? "";
@@ -80,7 +80,7 @@ export async function createInbox(label) {
 
 /** An inbox made earlier (an inbox file's address and password); it is deleted with the others. */
 export function adoptInbox({ address, password }) {
-  if (typeof address !== "string" || !/^qa-[\w-]+@[\w.-]+$/.test(address) || typeof password !== "string" || password === "") {
+  if (typeof address !== "string" || !/^(?:tcqa|qa)-[\w-]+@[\w.-]+$/.test(address) || typeof password !== "string" || password === "") {
     throw new Error("not a test inbox");
   }
   const inbox = { address, password, id: "", token: "" };
