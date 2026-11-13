@@ -22,7 +22,7 @@ const [{ blake3 }, { ed25519 }, { bases }] = await Promise.all([
 const { TinyCloudNode } = await import(join(worktree, "node_modules/@tinycloud/node-sdk/dist/index.js"));
 
 const proofId = randomBytes(6).toString("hex");
-const root = `/var/tmp/tc2872-share-proof-${sdkCommit.slice(0, 8)}-${proofId}`;
+const root = `/var/tmp/tc2872-share-${proofId}`;
 const privateDir = join(root, "private");
 const evidencePath = join(root, "evidence.json");
 mkdirSync(privateDir, { recursive: true, mode: 0o700 });

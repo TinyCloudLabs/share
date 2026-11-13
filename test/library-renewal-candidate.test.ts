@@ -1,23 +1,38 @@
 /** Library renewal discovery keeps SDK admission separate from saved account lookup. Details: TC-2872 */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { NodeWasmBindings, PrivateKeySigner } from "@tinycloud/node-sdk";
+import { privateKeyToAccount } from "viem/accounts";
 import { BrowserSessionStorage } from "@tinycloud/web-sdk";
 import { LIBRARY_SESSION_PREFIX, saveLibraryAccount, savedLibraryAccount, savedLibraryRenewalAccount } from "../src/share/library-session.js";
 
-const address = "0x1234567890abcdef1234567890abcdef12345678";
+const syntheticKey = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const address = privateKeyToAccount(syntheticKey).address;
 const account = { address, keyId: "synthetic", keyType: "MANAGED" as const };
 beforeEach(() => localStorage.clear());
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 async function save(prefix = LIBRARY_SESSION_PREFIX) {
   const sessions = new BrowserSessionStorage({ storage: localStorage, keyPrefix: prefix });
+  const wasm = new NodeWasmBindings();
+  const manager = wasm.createSessionManager();
+  const keyId = manager.createSessionKey("library-candidate");
+  const jwk = JSON.parse(manager.jwk(keyId));
+  const now = Date.now();
+  const expiresAt = new Date(now + 60_000).toISOString();
+  const prepared = wasm.prepareSession({
+    address, chainId: 1, domain: "share.tinycloud.xyz", issuedAt: new Date(now).toISOString(), expirationTime: expiresAt,
+    spaceId: wasm.makeSpaceId(address, 1, "applications"), jwk,
+    abilities: { kv: { "xyz.tinycloud.share/": ["tinycloud.kv/get"] } },
+  });
+  const signature = await new PrivateKeySigner(syntheticKey).signMessage(prepared.siwe);
+  const signed = wasm.completeSessionSetup({ ...prepared, signature });
   await sessions.save(address, {
-    address, chainId: 1, sessionKey: JSON.stringify({ kty: "OKP", crv: "Ed25519", x: "x" }),
-    siwe: "synthetic", signature: "0xsynthetic",
-    tinycloudSession: { delegationHeader: { Authorization: "Bearer synthetic" }, delegationCid: "bafy", spaceId: "space", verificationMethod: "did:key:z" },
-    expiresAt: new Date(Date.now() + 1_000).toISOString(), createdAt: new Date(Date.now() - 2_000).toISOString(), version: "1",
+    address, chainId: 1, sessionKey: JSON.stringify(jwk), siwe: prepared.siwe, signature,
+    tinycloudSession: { delegationHeader: signed.delegationHeader, delegationCid: signed.delegationCid, spaceId: signed.spaceId, verificationMethod: manager.getDID(keyId) },
+    expiresAt, createdAt: new Date(now).toISOString(), version: "1",
   });
   saveLibraryAccount(account);
-  vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 2_000 });
+  vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 61_000 });
   return sessions;
 }
 
@@ -44,7 +59,9 @@ it("requires the saved account to match the SDK candidate", async () => {
 
 it("refuses corrupt records and signed-out sessions", async () => {
   const sessions = await save();
-  sessions.markSignedOut(address, "0xsynthetic");
+  const saved = await sessions.loadRenewalCandidate(address);
+  if (saved.data === null) throw new Error("missing synthetic candidate");
+  sessions.markSignedOut(address, saved.data.signature);
   expect(await savedLibraryRenewalAccount("explicit-input")).toBeUndefined();
   localStorage.setItem(`${LIBRARY_SESSION_PREFIX}${address}`, "{}");
   expect(await savedLibraryRenewalAccount("explicit-input")).toBeUndefined();
