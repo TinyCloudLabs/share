@@ -36,6 +36,7 @@ async function selectedConfig(receiver: boolean): Promise<Config> {
   const selected = capturedConfig();
   expect(selected).not.toHaveProperty("tinycloudFallbackHosts");
   expect(selected.newUserHost).toBe(receiver ? null : config.senderBootstrapNodeOrigin);
+  expect(selected).not.toHaveProperty("tinycloudHosts");
   return selected;
 }
 

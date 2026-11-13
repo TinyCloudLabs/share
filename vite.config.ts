@@ -211,9 +211,13 @@ function landingTemplate(): Plugin {
   };
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
+  const env = loadEnv(mode, process.cwd(), "VITE_");
+  if (command === "build" && env["VITE_SHARE_HERMETIC"] === "true") {
+    throw new Error("Hermetic Share runs require the development server. Details: TC-2872");
+  }
   // Where sandbox documents and runtime files are served from; "" = same origin.
-  const userContentOrigin = parseUserContentOrigin(loadEnv(mode, process.cwd(), "VITE_")["VITE_USER_CONTENT_ORIGIN"]);
+  const userContentOrigin = parseUserContentOrigin(env["VITE_USER_CONTENT_ORIGIN"]);
   return {
     base: "/",
     plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(userContentOrigin), artifactSandboxHtml(userContentOrigin), jsxSandbox(userContentOrigin), userContentOriginPolicy(userContentOrigin)],
