@@ -28,6 +28,14 @@ export function savedLibraryAccount(storage?: Pick<Storage, "getItem">): AuthRes
     const record: unknown = JSON.parse(store.getItem(`${LIBRARY_SESSION_PREFIX}${address}`) ?? "null");
     const expiresAt = typeof record === "object" && record !== null && "expiresAt" in record && typeof record.expiresAt === "string" ? Date.parse(record.expiresAt) : Number.NaN;
     if (!(Number.isFinite(expiresAt) && expiresAt > Date.now())) return undefined;
+    return libraryAccountForAddress(store, address);
+  } catch {
+    return undefined;
+  }
+}
+
+function libraryAccountForAddress(store: Pick<Storage, "getItem">, address: string): AuthResult | undefined {
+  try {
     const account: unknown = JSON.parse(store.getItem(ACCOUNT_KEY) ?? "null");
     if (typeof account !== "object" || account === null || !("address" in account) || !("keyId" in account) || !("keyType" in account)) return undefined;
     const { address: accountAddress, keyId, keyType } = account;
@@ -67,4 +75,22 @@ export function openKeySignedInHere(): boolean {
 
 export function forgetOpenKeySignedInHere(): void {
   try { window.sessionStorage.removeItem(OPENKEY_TAB_KEY); } catch { /* Nothing stored. */ }
+}
+
+/** Discovers a library restore candidate for an explicitly approved lease. Details: TC-2872 */
+export async function savedLibraryRenewalAccount(leaseAuthorization: string, storage?: Storage): Promise<AuthResult | undefined> {
+  if (!leaseAuthorization) return undefined;
+  try {
+    const store = storage ?? window.localStorage;
+    const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
+    const sessions = new BrowserSessionStorage({ storage: store, keyPrefix: LIBRARY_SESSION_PREFIX });
+    const address = sessions.activeAddressForRenewal();
+    if (address === undefined) return undefined;
+    const candidate = await sessions.loadRenewalCandidate(address);
+    if (candidate.status !== "loaded" && candidate.status !== "renewal-candidate") return undefined;
+    if (sessions.isSignedOut(address, candidate.data.signature)) return undefined;
+    return libraryAccountForAddress(store, address);
+  } catch {
+    return undefined;
+  }
 }

@@ -7,7 +7,7 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
-import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
+import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount, savedLibraryRenewalAccount } from "./library-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -23,7 +23,7 @@ interface SenderApp {
 }
 
 /** `resume`: the OpenKey account of a library session saved on this device; the page then resumes it without a tap. */
-function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string): void {
+function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<unknown>, notice?: string): void {
   const resumable = resume !== undefined;
   // The first attempt rebuilds a managed key's session without opening OpenKey; Continue after a failure connects as usual.
   let reopen = resume?.keyType === "MANAGED" ? resume : undefined;
@@ -153,7 +153,7 @@ function render(): void {
 
 window.addEventListener("hashchange", render);
 
-async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
+async function bootstrap(session: OpenKeyShareSession, status: HTMLElement, libraryRenewalAuthorization?: string): Promise<ShareTinyCloud> {
   status.textContent = "Connecting to your encrypted TinyCloud…";
   const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }] = await Promise.all([
     import("../email-share/config.js"),
@@ -161,7 +161,7 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     import("./sender-history.js"),
   ]);
   const config = await loadSharePublicConfig();
-  const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
+  const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; }, libraryRenewalAuthorization);
   // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
   status.textContent = "Signed in. Loading your shares…";
   // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
@@ -191,6 +191,15 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${LIBRARY_ROUTE}`);
   }
   render();
+  return tinycloud;
+}
+
+/** Resumes the library with an explicit owner-approved lease input. Details: TC-2872 */
+export async function resumeLibraryWithRenewal(leaseAuthorization: string, status: HTMLElement): Promise<ShareTinyCloud> {
+  const account = await savedLibraryRenewalAccount(leaseAuthorization);
+  if (account === undefined) throw new Error("library-renewal-candidate");
+  const { reopenOpenKey } = await import("./openkey-session.js");
+  return bootstrap(reopenOpenKey(account), status, leaseAuthorization);
 }
 
 // A library session saved on this device resumes on its own; otherwise the sign-in wall.
