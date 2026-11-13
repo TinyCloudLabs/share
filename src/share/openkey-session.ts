@@ -406,7 +406,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       // A new sender cannot resolve a signed location record before its first
       // session exists. Use the explicitly configured owner-node choice only
       // for that bootstrap; addressed recipients never receive this fallback.
-      tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
+      newUserHost: hermeticNodeHost === undefined ? config.senderBootstrapNodeOrigin : null,
       tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
       autoDiscoverLocalNode: false,
       autoCreateSpace,
