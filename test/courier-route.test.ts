@@ -38,7 +38,7 @@ describe("the /courier route", () => {
     expect(directive(metaPolicy, "trusted-types")).toEqual(["share-viewer-html", "dompurify", "'allow-duplicates'"]);
     expect(directive(metaPolicy, "frame-src")).toEqual(["'self'", "https://openkey.so"]);
     const connect = directive(metaPolicy, "connect-src");
-    expect(connect).toEqual(["'self'", "https://tee.node.tinycloud.xyz", "https://registry.tinycloud.xyz", "https://openkey.so"]);
+    expect(connect).toEqual(["'self'", "https://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz", "https://registry.tinycloud.xyz", "https://openkey.so"]);
     for (const source of connect) expect(source).not.toMatch(/^https:$|\*/);
     expect(directive(metaPolicy, "script-src")).not.toContain("'unsafe-eval'");
     expect(directive(metaPolicy, "script-src")).not.toContain("'unsafe-inline'");

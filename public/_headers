@@ -46,8 +46,8 @@
 
 /courier
   ! Content-Security-Policy
-  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://tee.node.tinycloud.xyz https://registry.tinycloud.xyz https://openkey.so; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://node.tinycloud.xyz https://tee.node.tinycloud.xyz https://registry.tinycloud.xyz https://openkey.so; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'; frame-ancestors 'none'
 
 /courier/
   ! Content-Security-Policy
-  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://tee.node.tinycloud.xyz https://registry.tinycloud.xyz https://openkey.so; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://node.tinycloud.xyz https://tee.node.tinycloud.xyz https://registry.tinycloud.xyz https://openkey.so; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'; frame-ancestors 'none'
