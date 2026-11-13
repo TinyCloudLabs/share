@@ -33,6 +33,26 @@ const home = join(privateDir, "home");
 const tmp = join(privateDir, "tmp");
 for (const dir of [dataDir, home, tmp]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
+async function installRestoreObserver() {
+  await import("/src/share/openkey-session.ts");
+  const sdkUrl = performance.getEntriesByType("resource").map((entry) => entry.name).find((url) => new URL(url).pathname.endsWith("/@tinycloud_web-sdk.js"));
+  if (!sdkUrl) throw new Error("The app SDK module URL is unavailable.");
+  const { TinyCloudWeb } = await import(sdkUrl);
+  const originalRestore = TinyCloudWeb.prototype.restoreSessionWithRenewal;
+  if (typeof originalRestore !== "function") throw new Error("SDK restore observer is unavailable.");
+  TinyCloudWeb.prototype.restoreSessionWithRenewal = async function (...args) {
+    try {
+      const result = await originalRestore.apply(this, args);
+      await window.recordProofRestore({ status: result.status, code: result.error?.code, message: result.error?.message, causeCode: result.error?.cause?.code, causeMessage: result.error?.cause?.message });
+      return result;
+    } catch (error) {
+      await window.recordProofRestore({ status: "threw", code: error?.code, message: error?.message });
+      throw error;
+    }
+  };
+  return { installed: true, sdkPath: new URL(sdkUrl).pathname };
+}
+
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -147,6 +167,7 @@ let nodePort;
 let registryPort;
 let nodeOrigin;
 let registryOrigin;
+let statusThroughBrowser = false;
 try {
   evidence.consumerHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim();
   execFileSync("git", ["diff", "--quiet"], { cwd: worktree });
@@ -154,7 +175,7 @@ try {
   evidence.nodeBinary.sha256 = sha256(nodeBinary);
   if (evidence.nodeBinary.sha256 !== expectedNodeBinarySha256) throw new Error("supplied node binary SHA-256 mismatch");
   evidence.sdk.packages = {};
-  for (const name of ["sdk-core", "node-sdk", "web-sdk", "node-sdk-wasm", "web-sdk-wasm"]) {
+  for (const name of ["sdk-core", "node-sdk", "web-sdk", "node-sdk-wasm", "web-sdk-wasm", "share-sdk", "share-envelope", "sdk-services", "replica"]) {
     const path = join(worktree, `node_modules/@tinycloud/${name}/package.json`);
     evidence.sdk.packages[name] = JSON.parse(readFileSync(path, "utf8")).version;
   }
@@ -191,10 +212,14 @@ try {
   globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input.toString() : input.url);
     if (url.origin === "https://registry.tinycloud.xyz") { url.host = `127.0.0.1:${registryPort}`; url.protocol = "http:"; input = url.toString(); }
+    if (statusThroughBrowser && url.origin === nodeOrigin && url.pathname === "/delegation/status") {
+      url.host = `127.0.0.1:${browserPort}`;
+      input = url.toString();
+    }
     if (!allowedOrigins.has(url.origin)) throw new Error("SDK attempted a non-loopback request; blocked by proof harness");
     const response = await originalFetch(input, init);
     evidence.contactedOrigins.push(url.origin);
-    evidence.httpTrace.push({ origin: url.origin === nodeOrigin ? "loopback-node" : "loopback-registry", method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: url.pathname, status: response.status });
+    evidence.httpTrace.push({ origin: url.origin === nodeOrigin ? "loopback-node" : url.origin === registryOrigin ? "loopback-registry" : "loopback-browser", method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: url.pathname, status: response.status });
     return response;
   };
 
@@ -205,7 +230,7 @@ try {
   const browserPort = await freePort();
   const browserOrigin = `http://127.0.0.1:${browserPort}`;
   allowedOrigins.add(browserOrigin);
-  vite = await createViteServer({ root: worktree, optimizeDeps: { entries: ["src/share/main.ts"] }, define: { "import.meta.env.VITE_SHARE_HERMETIC": JSON.stringify("true") }, server: { host: "127.0.0.1", port: browserPort, strictPort: true, warmup: { clientFiles: ["./src/share/main.ts", "./src/share/sender-home.ts", "./src/share/sender-chrome.ts"] }, proxy: { "^/(delegate|invoke|peer|info|\\.well-known)": nodeOrigin } }, plugins: [{ name: "renewal-loopback-fixture", configureServer(server) {
+  vite = await createViteServer({ root: worktree, optimizeDeps: { entries: ["src/share/main.ts"] }, define: { "import.meta.env.VITE_SHARE_HERMETIC": JSON.stringify("true") }, server: { host: "127.0.0.1", port: browserPort, strictPort: true, warmup: { clientFiles: ["./src/share/main.ts", "./src/share/sender-home.ts", "./src/share/sender-chrome.ts"] }, proxy: { "^/(delegate|delegation|invoke|peer|info|\\.well-known)": nodeOrigin } }, plugins: [{ name: "renewal-loopback-fixture", configureServer(server) {
     server.middlewares.use((request, response, next) => {
       if (request.url === "/proof") { response.setHeader("content-type", "text/html"); response.end('<!doctype html><div id="share-app"></div>'); return; }
       if (request.url === "/.well-known/tinycloud-share/config.json") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ version: "tinycloud.share/config-v2", environment: "test", shareOrigin: "https://share.fixture.test", senderBootstrapNodeOrigin: "https://node.fixture.test", registryOrigin: "https://registry.fixture.test", credentialsOrigin: "https://witness.fixture.test", accountlessReceiverEnabled: false })); return; }
@@ -223,16 +248,29 @@ try {
   const page = await browser.newPage();
   await page.setRequestInterception(true);
   const browserBlockedOrigins = new Set();
+  evidence.browserBlockedOrigins = [];
+  evidence.browserHttpTrace = [];
+  await page.exposeFunction("recordProofRestore", (result) => {
+    const clean = (value) => typeof value === "string" ? value.replace(/0x[0-9a-fA-F]{64,}|[A-Za-z0-9_-]{100,}/g, "[redacted]").slice(0, 1200) : value;
+    evidence.sdkRestore = { stage, status: result.status, code: result.code, message: clean(result.message), causeCode: result.causeCode, causeMessage: clean(result.causeMessage), at: new Date().toISOString() };
+  });
+  page.on("response", (response) => {
+    if (["fetch", "xhr"].includes(response.request().resourceType())) evidence.browserHttpTrace.push({ stage, path: new URL(response.url()).pathname, status: response.status(), contentType: response.headers()["content-type"] });
+  });
+  page.on("requestfailed", (request) => {
+    if (["fetch", "xhr"].includes(request.resourceType())) evidence.browserHttpTrace.push({ stage, path: new URL(request.url()).pathname, failure: request.failure()?.errorText });
+  });
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (["data:", "blob:"].includes(url.protocol) || url.origin === browserOrigin) void request.continue();
-    else { browserBlockedOrigins.add(url.origin); void request.abort(); }
+    else { browserBlockedOrigins.add(url.origin); evidence.browserBlockedOrigins = [...browserBlockedOrigins]; void request.abort(); }
   });
   await page.goto(`${browserOrigin}/proof`);
   await page.evaluate(async () => {
     const entry = await import("/src/share/main.ts");
     if (typeof entry.resumeLibraryWithRenewal !== "function") throw new Error("library entry unavailable");
   });
+  evidence.restoreObserverPreflight = await page.evaluate(installRestoreObserver);
   const { PrivateKeySigner, MemorySessionStorage } = await import("@tinycloud/node-sdk");
   const { parseSignedSiweCacao } = await import("@tinycloud/sdk-core");
   const signer = new PrivateKeySigner(ownerKey);
@@ -266,6 +304,33 @@ try {
     await sessions.save(address, { ...persisted, tinycloudHosts: [browserOrigin] });
     saveLibraryAccount({ address, keyId: "synthetic-owner", keyType: "MANAGED" });
   }, { persisted, address, browserOrigin });
+  stage = "browser-live-preflight";
+  evidence.browserIdentityPreflight = await page.evaluate(async () => {
+    const response = await fetch("/.well-known/tinycloud/node-keys");
+    if (!response.ok) throw new Error("Browser node identity preflight refused.");
+    const identity = await response.json();
+    return { nodeDid: identity.nodeDid, renewerDid: identity.renewerDid, renewerEpoch: identity.renewerEpoch };
+  });
+  if (evidence.browserIdentityPreflight.nodeDid !== initialIdentity.nodeDid || evidence.browserIdentityPreflight.renewerDid !== initialIdentity.renewerDid || evidence.browserIdentityPreflight.renewerEpoch !== initialIdentity.renewerEpoch) throw new Error("Browser identity preflight differs from the owned node.");
+  evidence.browserLiveReadPreflight = await page.evaluate(async ({ address, proofPath, proofValue }) => {
+    const { createTinyCloudClient, reopenOpenKey } = await import("/src/share/openkey-session.ts");
+    const { loadSharePublicConfig } = await import("/src/email-share/config.ts");
+    const client = await createTinyCloudClient(reopenOpenKey({ address, keyId: "synthetic-owner", keyType: "MANAGED" }), await loadSharePublicConfig(), () => undefined);
+    const unlocked = await client.vault.unlock();
+    if (!unlocked.ok) throw new Error("Live library vault preflight refused.");
+    const read = await client.kv.get(proofPath);
+    if (!read.ok || read.data.data !== proofValue) throw new Error("Live library read preflight refused.");
+    return { readOk: true, exactValueMatch: true, unlocked: true };
+  }, { address, proofPath, proofValue });
+  await page.reload();
+  stage = "signed-live-status-preflight";
+  statusThroughBrowser = true;
+  let liveStatus;
+  try { liveStatus = await owner.getDelegationStatus(original.cid); } finally { statusThroughBrowser = false; }
+  evidence.liveStatusPreflight = liveStatus.ok
+    ? { ok: true, exists: liveStatus.data.exists, active: liveStatus.data.active, status: liveStatus.data.status }
+    : { ok: false, code: liveStatus.error.code, message: liveStatus.error.message };
+  if (!liveStatus.ok || !liveStatus.data.exists || !liveStatus.data.active) throw new Error("Signed live-status preflight refused.");
   stage = "wait-real-original-expiry";
   evidence.waitStartedAt = new Date().toISOString();
   writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
@@ -277,6 +342,7 @@ try {
   if (execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim() !== evidence.consumerHead) throw new Error("Consumer head changed during the proof.");
   execFileSync("git", ["diff", "--quiet"], { cwd: worktree });
   await page.reload();
+  await page.evaluate(installRestoreObserver);
   const result = await page.evaluate(async ({ leaseAuthorization, proofPath, proofValue }) => {
     const { savedLibraryAccount, savedLibraryRenewalAccount } = await import("/src/share/library-session.ts");
     const ordinaryExpired = savedLibraryAccount() === undefined;
@@ -312,4 +378,5 @@ try {
   writeFileSync(progressPath, JSON.stringify({ stage, result: evidence.result, at: new Date().toISOString(), root }), { mode: 0o600 });
   writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
   console.log(JSON.stringify({ result: evidence.result, stage, evidencePath }));
+  process.exitCode = evidence.result === "PASS" ? 0 : 1;
 }

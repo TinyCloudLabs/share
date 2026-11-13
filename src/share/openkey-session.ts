@@ -1,13 +1,13 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { composeManifestRequest, authorizationVerdictOf, EXPIRY, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
-import { BrowserSessionStorage, TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
+import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
-import { LIBRARY_SESSION_PREFIX, markOpenKeySignedInHere } from "./library-session.js";
+import { LIBRARY_SESSION_PREFIX, libraryRenewalCandidate, markOpenKeySignedInHere } from "./library-session.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -217,6 +217,7 @@ const REGISTRY_SYNC_WAIT_MS = 15_000;
 export interface SignInWithManifestOptions extends ManifestScope {
   /** Explicit owner-approved library lease. Details: TC-2872 */
   readonly libraryRenewalAuthorization?: string;
+  readonly assertLibraryState?: () => void;
   /**
    * What the signed-in session may do: a manifest, or a function of the signed-in
    * address for a manifest that names an account-specific resource (the share
@@ -370,7 +371,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   const onStatus = options.onStatus ?? (() => undefined);
   checkOptions(options);
   if (options.libraryRenewalAuthorization !== undefined &&
-      (options.sessionPrefix !== LIBRARY_SESSION_PREFIX || options.persistSession !== true || options.manifest !== shareManifest)) {
+      (options.sessionPrefix !== LIBRARY_SESSION_PREFIX || options.persistSession !== true || options.manifest !== shareManifest || options.session === undefined)) {
     throw new Error("library-renewal-scope");
   }
   // The manifest that is checked is a frozen private copy, and that copy is what gets signed: nothing the caller holds can
@@ -392,11 +393,17 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   // A connection the caller handed in is not this call's to close.
   let dispose: (() => Promise<void>) | undefined;
   try {
+    options.assertLibraryState?.();
+    const renewal = options.libraryRenewalAuthorization === undefined ? undefined : await libraryRenewalCandidate(options.libraryRenewalAuthorization, undefined, session.auth);
+    const assertCurrent = (): void => { options.assertLibraryState?.(); renewal?.assertCurrent(); };
+    assertCurrent();
     const manifest = typeof given === "function" ? freezeChecked(given(session.address), session.address) : checked;
     if (manifest === undefined) throw new Error("sign-in-no-manifest");
     const guardApproval: ApprovalGuard = async (wait, info) => {
       try {
-        return await (options.guardApproval ?? runUnguarded)(wait, info);
+        const result = await (options.guardApproval ?? runUnguarded)(wait, info);
+        assertCurrent();
+        return result;
       } catch (error) {
         // A cancel, a refusal or the guard giving up: do not leave a window open that nothing is waiting on.
         closeOpenKeyFlows(session.openkey);
@@ -439,6 +446,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
+    assertCurrent();
     // The provider answers account calls only with this connection's address (for a reopened session, the saved
     // account's), so a fresh sign-in can only sign in as that owner. A saved session is looked up under that same
     // address: the SDK restores the record stored for it, checking its shape and expiry but not comparing the record's
@@ -447,9 +455,8 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     try {
       if (options.libraryRenewalAuthorization !== undefined) {
         const restored = await tinycloud.restoreSessionWithRenewal(options.libraryRenewalAuthorization, session.address);
+        assertCurrent();
         if (restored.status !== "restored" || restored.session === undefined) throw new Error("library-renewal-restore");
-        const libraryStorage = new BrowserSessionStorage({ keyPrefix: LIBRARY_SESSION_PREFIX });
-        if (libraryStorage.isSignedOut(session.address, restored.session.signature)) throw new Error("library-renewal-signed-out");
         const permissions = composeManifestRequest([manifest], { includeAccountRegistryPermissions }).resources;
         if (!tinycloud.hasPermissions(permissions)) throw new Error("library-renewal-manifest");
         signedSession = restored.session;
@@ -461,22 +468,29 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       // restored session): handled below like a session the node refuses. Any other failure is the sign-in's own.
       if (options.libraryRenewalAuthorization !== undefined || tinycloud.sessionRestoreStatus !== "restored") throw error;
     }
-    if (signedSession === undefined || await restoredSessionRefused(tinycloud, includeAccountRegistryPermissions)) {
+    assertCurrent();
+    const refused = signedSession !== undefined && await restoredSessionRefused(tinycloud, includeAccountRegistryPermissions);
+    assertCurrent();
+    if (signedSession === undefined || refused) {
       if (options.libraryRenewalAuthorization !== undefined) throw new Error("library-renewal-refused");
       // A saved session that cannot be used: clear it and sign in afresh, as on a first visit.
       await tinycloud.signOut();
       signedSession = await tinycloud.signIn();
+      assertCurrent();
     }
     const sessionExpiresAt = options.libraryRenewalAuthorization === undefined
       ? signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS)
       : (await tinycloud.getRenewalEffectiveExpiry(options.libraryRenewalAuthorization)) * 1000;
+    assertCurrent();
     const spaces: Record<string, string> = {};
     for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
       spaces[name] = await tinycloud.ensureOwnedSpaceHosted(name);
+      assertCurrent();
     }
     if (options.waitForAccountRegistrySync !== undefined && options.waitForAccountRegistrySync !== false) {
       const wait = options.waitForAccountRegistrySync;
       await settleAccountRegistrySync(tinycloud, typeof wait === "object" ? wait.timeoutMs ?? REGISTRY_SYNC_WAIT_MS : REGISTRY_SYNC_WAIT_MS);
+      assertCurrent();
     }
     let detaching: Promise<void> | undefined;
     // Leaves the session where it is (in memory, and in storage when the caller persisted it):
@@ -485,6 +499,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       detaching ??= (async () => { if (opened) closeOpenKeyFlows(session.openkey); })();
       return detaching;
     };
+    assertCurrent();
     return { tinycloud, session, spaces, sessionExpiresAt, detach, dispose };
   } catch (error) {
     if (dispose !== undefined) await dispose();
@@ -595,13 +610,26 @@ export async function createTinyCloudClient(
   config: SharePublicConfig,
   onStatus: (message: string) => void,
   libraryRenewalAuthorization?: string,
+  assertLibraryState?: () => void,
 ): Promise<ShareTinyCloud> {
+  const renewal = libraryRenewalAuthorization === undefined ? undefined : await libraryRenewalCandidate(libraryRenewalAuthorization, undefined, session.auth);
+  const assertCurrent = (): void => { assertLibraryState?.(); renewal?.assertCurrent(); };
+  assertCurrent();
   // Persisted under the library's own prefix for the SDK's sign-in session tier: a reload restores it, with no new
   // approval, until its signed expiry or until the sender signs out (which clears it). A revoked one is refused and
   // replaced by a fresh sign-in.
   // Every OpenKey approval that completes here needed OpenKey's sign-in in this tab, so Share's Sign out may end it.
   const guardApproval: ApprovalGuard = async (wait) => { const result = await wait(); markOpenKeySignedInHere(); return result; };
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, ...(libraryRenewalAuthorization === undefined ? {} : { libraryRenewalAuthorization }), sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
-  onStatus("Your encrypted share library is ready.");
-  return tinycloud;
+  let tinycloud: ShareTinyCloud | undefined;
+  try {
+    const signed = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, ...(libraryRenewalAuthorization === undefined ? {} : { libraryRenewalAuthorization }), assertLibraryState: assertCurrent, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
+    tinycloud = signed.tinycloud;
+    assertCurrent();
+    onStatus("Your encrypted share library is ready.");
+    assertCurrent();
+    return tinycloud;
+  } catch (error) {
+    if (tinycloud !== undefined && (renewal !== undefined || assertLibraryState !== undefined)) await tinycloud.signOut().catch(() => undefined);
+    throw error;
+  }
 }

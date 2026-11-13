@@ -7,13 +7,14 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
-import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount, savedLibraryRenewalAccount } from "./library-session.js";
+import { forgetLibraryAccount, libraryRenewalCandidate, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";
+let authenticationEpoch = 0;
 
 interface SenderApp {
   readonly session: OpenKeyShareSession;
@@ -56,18 +57,26 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
   submit.hidden = resumable;
   copy.hidden = resumable;
   form.addEventListener("submit", (event) => {
+    const attempt = ++authenticationEpoch;
     event.preventDefault(); submit.disabled = true;
     const account = reopen; reopen = undefined;
     // A resume opens no OpenKey window: what it does first is reach the encrypted TinyCloud.
     status.textContent = account !== undefined ? "Connecting to your encrypted TinyCloud…" : "Loading secure sign-in…";
     void import("./openkey-session.js")
-      .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }).then((session) => {
+      .then((openkey) => {
+        if (attempt !== authenticationEpoch) throw new Error("library-auth-cancelled");
+        return account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { if (attempt === authenticationEpoch) status.textContent = message; }).then((session) => {
         // OpenKey connected in this tab, so it now holds a sign-in here that Sign out can end.
         markOpenKeySignedInHere();
         return session;
-      }))
-      .then((session) => proceed(session, status))
+        });
+      })
+      .then((session) => {
+        if (attempt !== authenticationEpoch) { try { session.openkey.disconnect(); } catch {} throw new Error("library-auth-cancelled"); }
+        return proceed(session, status);
+      })
       .catch((error) => {
+        if (attempt !== authenticationEpoch) return;
         // TC-335: `error.message` used to be rendered here verbatim. Everything
         // that can reject on this path speaks protocol vocabulary —
         // openkey-session's own throws (now tagged), the OpenKey SDK, and the
@@ -153,28 +162,42 @@ function render(): void {
 
 window.addEventListener("hashchange", render);
 
-async function bootstrap(session: OpenKeyShareSession, status: HTMLElement, libraryRenewalAuthorization?: string): Promise<ShareTinyCloud> {
-  status.textContent = "Connecting to your encrypted TinyCloud…";
-  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }] = await Promise.all([
-    import("../email-share/config.js"),
-    import("./openkey-session.js"),
-    import("./sender-history.js"),
-  ]);
-  const config = await loadSharePublicConfig();
-  const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; }, libraryRenewalAuthorization);
-  // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
-  status.textContent = "Signed in. Loading your shares…";
-  // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
-  saveLibraryAccount(session.auth);
-  const unlocked = await tinycloud.vault.unlock();
-  if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
-  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
-  const chromeScope = document.createElement("div");
-  (root as HTMLElement).replaceChildren(chromeScope, view);
-  void import("./sender-chrome.js").then(({ mountSenderChrome }) => {
+async function bootstrap(session: OpenKeyShareSession, status: HTMLElement, libraryRenewalAuthorization?: string, assertLibraryState: () => void = () => undefined): Promise<ShareTinyCloud> {
+  const epoch = authenticationEpoch;
+  const assertCurrent = (): void => {
+    if (epoch !== authenticationEpoch) throw new Error("library-auth-cancelled");
+    assertLibraryState();
+  };
+  let tinycloud: ShareTinyCloud | undefined;
+  try {
+    assertCurrent();
+    status.textContent = "Connecting to your encrypted TinyCloud…";
+    const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { mountSenderChrome }] = await Promise.all([
+      import("../email-share/config.js"),
+      import("./openkey-session.js"),
+      import("./sender-history.js"),
+      import("./sender-chrome.js"),
+    ]);
+    assertCurrent();
+    const config = await loadSharePublicConfig();
+    assertCurrent();
+    tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; }, libraryRenewalAuthorization, assertCurrent);
+    assertCurrent();
+    // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
+    status.textContent = "Signed in. Loading your shares…";
+    const unlocked = await tinycloud.vault.unlock();
+    assertCurrent();
+    if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
+    // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
+    assertCurrent();
+    saveLibraryAccount(session.auth);
+    app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
+    const chromeScope = document.createElement("div");
+    (root as HTMLElement).replaceChildren(chromeScope, view);
     mountSenderChrome(chromeScope, {
       session, tinycloud,
       onSignedOut: (notice) => {
+        authenticationEpoch += 1;
         // The session is gone: no screen may keep using it, and nothing in memory may start another request with it.
         app = undefined; renderToken += 1; view.replaceChildren(); forgetLibraryAccount();
         // Nor may anything it left running block the next sign-in: revokes in flight, the open wallet request, and the screens' listeners.
@@ -185,21 +208,33 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement, libr
         mountAuthentication(root as HTMLElement, undefined, bootstrap, notice);
       },
     });
-  });
-  if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {
-    // Keep the library the durable home without adding a history entry.
-    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${LIBRARY_ROUTE}`);
+    if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {
+      // Keep the library the durable home without adding a history entry.
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${LIBRARY_ROUTE}`);
+    }
+    render();
+    return tinycloud;
+  } catch (error) {
+    if ((libraryRenewalAuthorization !== undefined || epoch !== authenticationEpoch) && tinycloud !== undefined) {
+      if (app?.tinycloud === tinycloud) { app = undefined; renderToken += 1; view.replaceChildren(); }
+      await tinycloud.signOut().catch(() => undefined);
+    }
+    throw error;
   }
-  render();
-  return tinycloud;
 }
 
 /** Resumes the library with an explicit owner-approved lease input. Details: TC-2872 */
 export async function resumeLibraryWithRenewal(leaseAuthorization: string, status: HTMLElement): Promise<ShareTinyCloud> {
-  const account = await savedLibraryRenewalAccount(leaseAuthorization);
-  if (account === undefined) throw new Error("library-renewal-candidate");
+  const epoch = ++authenticationEpoch;
+  const renewal = await libraryRenewalCandidate(leaseAuthorization);
+  const assertCurrent = (): void => {
+    if (epoch !== authenticationEpoch) throw new Error("library-auth-cancelled");
+    renewal.assertCurrent();
+  };
+  assertCurrent();
   const { reopenOpenKey } = await import("./openkey-session.js");
-  return bootstrap(reopenOpenKey(account), status, leaseAuthorization);
+  assertCurrent();
+  return bootstrap(reopenOpenKey(renewal.account), status, leaseAuthorization, assertCurrent);
 }
 
 // A library session saved on this device resumes on its own; otherwise the sign-in wall.
