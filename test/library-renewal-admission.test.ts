@@ -74,11 +74,13 @@ it("honors a sign-out mark written while SDK restore is in flight", async () => 
   expect(state.order).toEqual(["sdk-admission", "dispose"]);
 });
 
-for (const stage of ["sdk-admission", "account-read", "effective-expiry", "host"]) {
+for (const stage of ["sdk-admission", "account-read", "effective-expiry", "host"] as const) {
   for (const change of ["sign-out", "account-switch"]) {
     it(`refuses ${change} during ${stage} and disposes the partial client`, async () => {
       state.changeAt = stage; state.changeKind = change;
-      await expect(createTinyCloudClient(session(), config, () => undefined, "owner-approved-lease")).rejects.toThrow("library-renewal-state-changed");
+      await expect(createTinyCloudClient(session(), config, (message) => { if (message === "Your encrypted share library is ready.") atStage("ready"); }, "owner-approved-lease")).rejects.toThrow("library-renewal-state-changed");
+      const nextStage = { "sdk-admission": "manifest-check", "account-read": "effective-expiry", "effective-expiry": "host", host: "ready" }[stage];
+      expect(state.order).not.toContain(nextStage);
       expect(state.order.at(-1)).toBe("dispose");
       expect(state.order).not.toContain("fresh-sign-in");
     });
