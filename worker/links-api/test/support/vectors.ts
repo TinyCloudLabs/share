@@ -39,7 +39,7 @@ const VECTORS_FILE = new URL("../vectors/short-links-api-vectors.json", import.m
  * SHA-256 of the committed copy of `docs/specs/short-links-api-vectors.json` (contract Appendix B).
  * Updating the copy is a change of this one line plus the file.
  */
-export const VECTORS_SHA256 = "59641c44536e5f53d7230205ff7d277bd5441cc8ddac10b7bee63f1d2358f3e6";
+export const VECTORS_SHA256 = "52586680265495a172264093c57c4335eac3fb14642cf978963c64bd50d7b639";
 
 export function vectorsPath(): URL {
   return VECTORS_FILE;
@@ -165,8 +165,15 @@ export interface Vectors {
   };
   readonly rateLimits: {
     readonly perIssuer: { readonly create: Limit[]; readonly delete: Limit[] };
-    readonly perClientAddress: { readonly createAnyIssuer: Limit[]; readonly invalidRequests: Limit[]; readonly read: Limit[]; readonly delete: Limit[] };
+    readonly perClientAddress: {
+      readonly createAnyIssuer: Limit[];
+      readonly createVerified: Limit[];
+      readonly invalidRequests: Limit[];
+      readonly read: Limit[];
+      readonly delete: Limit[];
+    };
     readonly perApiKey: { readonly create: Limit[]; readonly delete: Limit[] };
+    readonly allAddresses: { readonly createSigned: Limit[] };
     readonly windowSequences: { readonly name: string; readonly limit: number; readonly windowSeconds: number; readonly timesSeconds: number[]; readonly expectAllowed: boolean[] }[];
     readonly globalQuotaPerType: Record<LinkType, { readonly rows: number; readonly bytes: number }>;
   };
@@ -543,6 +550,8 @@ function runConstants(run: Run): void {
     ["perIssuer create", rateLimits.perIssuer.create, shaped(LIMITS.issuerCreate)],
     ["perIssuer delete", rateLimits.perIssuer.delete, shaped(LIMITS.issuerDelete)],
     ["address create", rateLimits.perClientAddress.createAnyIssuer, shaped(LIMITS.addressCreate)],
+    ["address verified create", rateLimits.perClientAddress.createVerified, shaped([LIMITS.addressVerifiedCreate])],
+    ["all addresses signed create", rateLimits.allAddresses.createSigned, shaped([LIMITS.publicCreate])],
     ["address refused", rateLimits.perClientAddress.invalidRequests, shaped([LIMITS.addressRefused])],
     ["address read", rateLimits.perClientAddress.read, shaped([LIMITS.addressRead])],
     ["address delete", rateLimits.perClientAddress.delete, shaped([LIMITS.addressDelete])],
