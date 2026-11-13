@@ -35,7 +35,7 @@ describe("Share owner node discovery", () => {
 
     expect(state.config).toMatchObject({
       tinycloudRegistryUrl: "https://registry.tinycloud.xyz",
-      tinycloudFallbackHosts: ["https://tee.node.tinycloud.xyz"],
+      newUserHost: "https://tee.node.tinycloud.xyz",
       autoDiscoverLocalNode: false,
     });
     expect(state.config).not.toHaveProperty("tinycloudHosts");
