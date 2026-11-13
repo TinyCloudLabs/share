@@ -12,7 +12,8 @@ const worktree = process.cwd();
 const nodeBinary = "/var/tmp/tc2904-node-artifact/tinycloud";
 const expectedNodeBinarySha256 = "58645b7c9bec9a0d45584c0aca7a8c37bb08ab7b9aad926af05763687d053edd";
 const nodeSourceCommit = "3efdddc997eb112803166d6f45a99d8c25344715";
-const sdkCommit = "255e1c7e74cab178698e3d3fae5bae5b69f0f7c0";
+const sdkCommit = process.env.TC2872_SDK_COMMIT;
+if (!/^[a-f0-9]{40}$/.test(sdkCommit ?? "")) throw new Error("Set TC2872_SDK_COMMIT to the reviewed published SDK commit.");
 const [{ blake3 }, { ed25519 }, { bases }] = await Promise.all([
   import(pathToFileURL(join(worktree, "node_modules/@noble/hashes/blake3.js")).href),
   import(pathToFileURL(join(worktree, "node_modules/@noble/curves/ed25519.js")).href),
@@ -187,10 +188,11 @@ try {
   stage = "browser-fixture";
   const { createServer: createViteServer } = await import("vite");
   const { default: puppeteer } = await import("puppeteer");
+  const { PUPPETEER_REVISIONS } = await import("puppeteer-core/internal/revisions.js");
   const browserPort = await freePort();
   const browserOrigin = `http://127.0.0.1:${browserPort}`;
   allowedOrigins.add(browserOrigin);
-  vite = await createViteServer({ root: worktree, define: { "import.meta.env.VITE_SHARE_HERMETIC": JSON.stringify("true") }, server: { host: "127.0.0.1", port: browserPort, strictPort: true, proxy: { "^/(delegate|invoke|peer|info|\\.well-known)": nodeOrigin } }, plugins: [{ name: "renewal-loopback-fixture", configureServer(server) {
+  vite = await createViteServer({ root: worktree, optimizeDeps: { entries: ["src/share/main.ts"] }, define: { "import.meta.env.VITE_SHARE_HERMETIC": JSON.stringify("true") }, server: { host: "127.0.0.1", port: browserPort, strictPort: true, warmup: { clientFiles: ["./src/share/main.ts", "./src/share/sender-home.ts", "./src/share/sender-chrome.ts"] }, proxy: { "^/(delegate|invoke|peer|info|\\.well-known)": nodeOrigin } }, plugins: [{ name: "renewal-loopback-fixture", configureServer(server) {
     server.middlewares.use((request, response, next) => {
       if (request.url === "/proof") { response.setHeader("content-type", "text/html"); response.end('<!doctype html><div id="share-app"></div>'); return; }
       if (request.url === "/.well-known/tinycloud-share/config.json") { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ version: "tinycloud.share/config-v2", environment: "test", shareOrigin: "https://share.fixture.test", senderBootstrapNodeOrigin: "https://node.fixture.test", registryOrigin: "https://registry.fixture.test", credentialsOrigin: "https://witness.fixture.test", accountlessReceiverEnabled: false })); return; }
@@ -198,7 +200,11 @@ try {
     });
   } }] });
   await vite.listen();
+  await vite.waitForRequestsIdle();
   browser = await puppeteer.launch({ executablePath: process.env.TC2872_CHROME, headless: true, userDataDir: join(privateDir, "chrome"), args: ["--no-sandbox", "--disable-dev-shm-usage"], env: { PATH: process.env.PATH, HOME: home, TC_HOME: home, TMPDIR: tmp } });
+  const browserVersion = await browser.version();
+  evidence.browserVersion = browserVersion;
+  if (!browserVersion.endsWith("/" + PUPPETEER_REVISIONS.chrome)) throw new Error("Use the Chrome version pinned by Puppeteer.");
   const page = await browser.newPage();
   await page.setRequestInterception(true);
   const browserBlockedOrigins = new Set();
@@ -208,6 +214,10 @@ try {
     else { browserBlockedOrigins.add(url.origin); void request.abort(); }
   });
   await page.goto(`${browserOrigin}/proof`);
+  await page.evaluate(async () => {
+    const entry = await import("/src/share/main.ts");
+    if (typeof entry.resumeLibraryWithRenewal !== "function") throw new Error("library entry unavailable");
+  });
   const { PrivateKeySigner, MemorySessionStorage } = await import("@tinycloud/node-sdk");
   const { parseSignedSiweCacao } = await import("@tinycloud/sdk-core");
   const signer = new PrivateKeySigner(ownerKey);
@@ -280,6 +290,8 @@ try {
   globalThis.fetch = originalFetch;
   await stopNode(nodeChild);
   await closeServer(registry);
+  await owner?.signOut();
+  writeFileSync(progressPath, JSON.stringify({ stage, result: evidence.result, at: new Date().toISOString(), root }), { mode: 0o600 });
   writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + "\n", { mode: 0o600 });
   console.log(JSON.stringify({ result: evidence.result, stage, evidencePath }));
 }
