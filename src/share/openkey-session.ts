@@ -1,6 +1,6 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { composeManifestRequest, authorizationVerdictOf, EXPIRY, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
-import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
+import { BrowserSessionStorage, TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
@@ -447,7 +447,9 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     try {
       if (options.libraryRenewalAuthorization !== undefined) {
         const restored = await tinycloud.restoreSessionWithRenewal(options.libraryRenewalAuthorization, session.address);
-        if (restored.status !== "restored") throw new Error("library-renewal-restore");
+        if (restored.status !== "restored" || restored.session === undefined) throw new Error("library-renewal-restore");
+        const libraryStorage = new BrowserSessionStorage({ keyPrefix: LIBRARY_SESSION_PREFIX });
+        if (libraryStorage.isSignedOut(session.address, restored.session.signature)) throw new Error("library-renewal-signed-out");
         const permissions = composeManifestRequest([manifest], { includeAccountRegistryPermissions }).resources;
         if (!tinycloud.hasPermissions(permissions)) throw new Error("library-renewal-manifest");
         signedSession = restored.session;

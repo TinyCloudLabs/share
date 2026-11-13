@@ -2,11 +2,14 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createTinyCloudClient, reopenOpenKey, shareManifest, SHARE_MANIFEST_SCOPE, signInWithManifest } from "../src/share/openkey-session.js";
 import { LIBRARY_SESSION_PREFIX } from "../src/share/library-session.js";
+import { BrowserSessionStorage } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../src/email-share/config.js";
 
-const state = vi.hoisted(() => ({ order: [] as string[], admitted: true, manifestCovered: true, effectiveExpiry: 2_000_000_000, sessionAddress: "0x1234567890abcdef1234567890abcdef12345678" }));
+const state = vi.hoisted(() => ({ order: [] as string[], admitted: true, manifestCovered: true, signOutDuringRestore: false, effectiveExpiry: 2_000_000_000, sessionAddress: "0x1234567890abcdef1234567890abcdef12345678" }));
 vi.mock("@openkey/sdk", () => ({ OpenKey: class { disconnect() {} }, OpenKeyProvider: class {} }));
-vi.mock("@tinycloud/web-sdk", () => ({ TinyCloudWeb: class {
+vi.mock("@tinycloud/web-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tinycloud/web-sdk")>();
+  return { BrowserSessionStorage: actual.BrowserSessionStorage, TinyCloudWeb: class {
   sessionRestoreStatus = "restored";
   spaceId = "applications";
   account = { spaces: { get: async () => { state.order.push("account-read"); return { ok: true, data: {} }; } } };
@@ -14,17 +17,18 @@ vi.mock("@tinycloud/web-sdk", () => ({ TinyCloudWeb: class {
     state.order.push("sdk-admission");
     expect(authorization).toBe("owner-approved-lease");
     expect(address).toBe(state.sessionAddress);
-    return state.admitted ? { status: "restored", session: { address, siwe: "Expiration Time: 2000-01-01T00:00:00Z" } } : { status: "restore-failed" };
+    if (state.signOutDuringRestore) new BrowserSessionStorage({ keyPrefix: LIBRARY_SESSION_PREFIX }).markSignedOut(address, "0xsynthetic");
+    return state.admitted ? { status: "restored", session: { address, signature: "0xsynthetic", siwe: "Expiration Time: 2000-01-01T00:00:00Z" } } : { status: "restore-failed" };
   }
   hasPermissions(resources: unknown[]) { state.order.push("manifest-check"); expect(resources.length).toBeGreaterThan(0); return state.manifestCovered; }
   async getRenewalEffectiveExpiry() { state.order.push("effective-expiry"); return state.effectiveExpiry; }
   async signIn() { state.order.push("fresh-sign-in"); throw new Error("unexpected-owner-approval"); }
   async signOut() { state.order.push("dispose"); }
   async ensureOwnedSpaceHosted() { state.order.push("host"); return "account"; }
-} }));
+} }; });
 const config: SharePublicConfig = { version: "tinycloud.share/config-v2", shareOrigin: "https://share.tinycloud.xyz", senderBootstrapNodeOrigin: "https://tee.node.tinycloud.xyz", registryOrigin: "https://registry.tinycloud.xyz", credentialsOrigin: "https://witness.credentials.org", accountlessReceiverEnabled: false };
 const session = () => reopenOpenKey({ address: state.sessionAddress, keyId: "synthetic", keyType: "MANAGED" });
-beforeEach(() => { state.order = []; state.admitted = true; state.manifestCovered = true; });
+beforeEach(() => { state.order = []; state.admitted = true; state.manifestCovered = true; state.signOutDuringRestore = false; localStorage.clear(); });
 
 it("completes SDK admission and manifest coverage before an account read or hosting", async () => {
   await createTinyCloudClient(session(), config, () => undefined, "owner-approved-lease");
@@ -46,4 +50,10 @@ for (const refusal of ["admission", "manifest"] as const) {
 it("keeps the explicit lease input scoped to the library manifest and storage prefix", async () => {
   await expect(signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session: session(), persistSession: true, sessionPrefix: LIBRARY_SESSION_PREFIX + "runner-", libraryRenewalAuthorization: "owner-approved-lease" })).rejects.toThrow("library-renewal-scope");
   expect(state.order).toEqual([]);
+});
+
+it("honors a sign-out mark written while SDK restore is in flight", async () => {
+  state.signOutDuringRestore = true;
+  await expect(createTinyCloudClient(session(), config, () => undefined, "owner-approved-lease")).rejects.toThrow("library-renewal-signed-out");
+  expect(state.order).toEqual(["sdk-admission", "dispose"]);
 });
