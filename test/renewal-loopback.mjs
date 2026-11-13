@@ -1,7 +1,7 @@
 /** Library reload through the published SDK and a real loopback scheduler. Details: TC-2872 */
 import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { closeSync, chmodSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
@@ -123,6 +123,16 @@ let owner;
 let restored;
 let browser;
 let vite;
+let closingBrowser = false;
+async function waitUntil(deadline) {
+  while (Date.now() < deadline) {
+    if (!browser.isConnected()) {
+      evidence.browserDisconnectedAt ??= new Date().toISOString();
+      throw new Error("Owned proof browser disconnected during the real-clock wait.");
+    }
+    await delay(Math.min(5000, deadline - Date.now()));
+  }
+}
 let stage = "setup";
 const progressPath = join(root, "progress.json");
 const progressTimer = setInterval(() => { writeFileSync(progressPath, JSON.stringify({ stage, at: new Date().toISOString(), root }), { mode: 0o600 }); }, 5000);
@@ -138,6 +148,9 @@ let registryPort;
 let nodeOrigin;
 let registryOrigin;
 try {
+  evidence.consumerHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim();
+  execFileSync("git", ["diff", "--quiet"], { cwd: worktree });
+  evidence.consumerSources = Object.fromEntries(["src/share/main.ts", "src/share/library-session.ts", "src/share/openkey-session.ts", "package-lock.json"].map((path) => [path, sha256(join(worktree, path))]));
   evidence.nodeBinary.sha256 = sha256(nodeBinary);
   if (evidence.nodeBinary.sha256 !== expectedNodeBinarySha256) throw new Error("supplied node binary SHA-256 mismatch");
   evidence.sdk.packages = {};
@@ -202,6 +215,8 @@ try {
   await vite.listen();
   await vite.waitForRequestsIdle();
   browser = await puppeteer.launch({ executablePath: process.env.TC2872_CHROME, headless: true, userDataDir: join(privateDir, "chrome"), args: ["--no-sandbox", "--disable-dev-shm-usage"], env: { PATH: process.env.PATH, HOME: home, TC_HOME: home, TMPDIR: tmp } });
+  evidence.browserLaunchedAt = new Date().toISOString();
+  browser.on("disconnected", () => { if (!closingBrowser) evidence.browserDisconnectedAt = new Date().toISOString(); });
   const browserVersion = await browser.version();
   evidence.browserVersion = browserVersion;
   if (!browserVersion.endsWith("/" + PUPPETEER_REVISIONS.chrome)) throw new Error("Use the Chrome version pinned by Puppeteer.");
@@ -254,11 +269,13 @@ try {
   stage = "wait-real-original-expiry";
   evidence.waitStartedAt = new Date().toISOString();
   writeFileSync(evidencePath, JSON.stringify(evidence, null, 2), { mode: 0o600 });
-  await delay(Math.max(0, originalExpiryMs - Date.now() - 15_000));
+  await waitUntil(originalExpiryMs - 15_000);
   const near = await owner.kv.get(proofPath);
   if (!near.ok) throw new Error("near-expiry original read refused");
-  await delay(Math.max(0, originalExpiryMs - Date.now() + 1_500));
+  await waitUntil(originalExpiryMs + 1_500);
   stage = "actual-library-reload";
+  if (execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktree, encoding: "utf8" }).trim() !== evidence.consumerHead) throw new Error("Consumer head changed during the proof.");
+  execFileSync("git", ["diff", "--quiet"], { cwd: worktree });
   await page.reload();
   const result = await page.evaluate(async ({ leaseAuthorization, proofPath, proofValue }) => {
     const { savedLibraryAccount, savedLibraryRenewalAccount } = await import("/src/share/library-session.ts");
@@ -278,13 +295,14 @@ try {
   evidence.result = "PASS";
   stage = "complete";
 } catch (error) {
-  evidence.result = "FAIL";
+  evidence.result = evidence.browserDisconnectedAt ? "INVALIDATED" : "FAIL";
   evidence.errorName = error?.name;
   evidence.error = String(error?.message ?? error).replace(/[A-Za-z0-9_-]{100,}/g, "[redacted]").slice(0, 1200);
 } finally {
   clearInterval(progressTimer);
   evidence.stage = stage;
   evidence.finishedAt = new Date().toISOString();
+  closingBrowser = true;
   await browser?.close();
   await vite?.close();
   globalThis.fetch = originalFetch;
