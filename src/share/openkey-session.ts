@@ -7,6 +7,7 @@ import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
+import { SIGN_IN_NARROWED } from "./sender-failure.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 import { LIBRARY_SESSION_PREFIX, markOpenKeySignedInHere } from "./library-session.js";
 
@@ -176,7 +177,7 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider implements OpenKeyA
     }
     // OpenKey lets the person remove a grant that is not required. The library needs every grant it asks for.
     const dropped = unauthorizedRecapCapabilities(extractRecapAttenuations(request.siwe), extractRecapAttenuations(result.signedMessage));
-    if (dropped.length > 0) throw new Error("sign-in-approval-narrowed");
+    if (dropped.length > 0) throw new Error(SIGN_IN_NARROWED);
     return result;
   }
 

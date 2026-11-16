@@ -10,6 +10,7 @@ import {
   type ApprovalInfo,
   type ShareTinyCloud,
 } from "../src/share/openkey-session.js";
+import { authFailureMessage, SENDER_FAILURE } from "../src/share/sender-failure.js";
 
 const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const OTHER_ADDRESS = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
@@ -30,6 +31,7 @@ const state = vi.hoisted(() => ({
   clients: [] as Array<{ config: Record<string, unknown> }>,
   authorized: [] as Array<{ request: Record<string, unknown>; opts: unknown }>,
   signMessages: 0,
+  signedOut: 0,
   answer: undefined as undefined | ((request: { siwe: string }) => Promise<unknown>),
   signInOutcome: [] as Array<"authorized" | "legacy">,
 }));
@@ -62,7 +64,7 @@ vi.mock("@tinycloud/web-sdk", () => ({
       state.signInOutcome.push("authorized");
       return { address: ADDRESS, siwe: result.signedMessage };
     }
-    async signOut(): Promise<void> {}
+    async signOut(): Promise<void> { state.signedOut += 1; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { return name; }
   },
 }));
@@ -81,6 +83,7 @@ beforeEach(() => {
   state.clients.length = 0;
   state.authorized.length = 0;
   state.signMessages = 0;
+  state.signedOut = 0;
   state.signInOutcome.length = 0;
   state.answer = approve(ASKED);
   localStorage.clear();
@@ -152,11 +155,14 @@ describe("a versioned approval that does not give the library a usable session",
     expect(takeWalletApprovalFailure(client)).toBe("wrong-account");
   });
 
-  it("refuses an approval from which the person removed a grant the library asked for", async () => {
+  it("refuses an approval from which the person removed a grant the library asked for, saying what to do, and leaves no session", async () => {
     state.answer = approve(NARROWED);
     const { error } = await failedSignIn();
 
-    expect(error).toEqual(new Error("sign-in-approval-narrowed"));
+    expect(authFailureMessage(error)).toMatch(/needs to read and write your share library.*keep all permissions/);
+    expect(authFailureMessage(error)).not.toBe(SENDER_FAILURE.signIn);
+    // The half-made client is signed out, so nothing is saved or kept for a later restore.
+    expect(state.signedOut).toBe(1);
   });
 
   it("accepts an approval that keeps every grant", async () => {
