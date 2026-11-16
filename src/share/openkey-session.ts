@@ -1,5 +1,6 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { authorizationVerdictOf, EXPIRY, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, EXPIRY, extractRecapAttenuations, unauthorizedRecapCapabilities, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import type { OpenKeyAuthorizeTinyCloud } from "@tinycloud/node-sdk/core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
@@ -98,6 +99,10 @@ export type WalletApprovalFailure = "cancelled" | "timeout" | "wrong-account";
 
 type SignatureVerifier = (message: string, signature: string, address: string) => Promise<boolean>;
 
+type AuthorizeRequest = Parameters<OpenKeyAuthorizeTinyCloud["authorizeTinyCloud"]>[0];
+type AuthorizeOptions = Parameters<OpenKeyAuthorizeTinyCloud["authorizeTinyCloud"]>[1];
+type AuthorizeResult = Awaited<ReturnType<OpenKeyAuthorizeTinyCloud["authorizeTinyCloud"]>>;
+
 function approvalFailureOf(caught: unknown): WalletApprovalFailure | undefined {
   const code = typeof caught === "object" && caught !== null && "code" in caught ? caught.code : undefined;
   if (code === "USER_CANCELLED" || code === 4001) return "cancelled";
@@ -118,26 +123,61 @@ function hexToText(hex: string): string | undefined {
  * "[object Object]". Every signature must also recover to the signed-in
  * account; one from any other account is refused here, before the SDK can
  * attach it to a request.
+ *
+ * It is also the `config.openkey.client` of a versioned sign-in (`authorizeTinyCloud`): that approval is
+ * guarded, counted and observed as a `personal_sign` is, and a result from another account, or one that
+ * dropped any grant asked for, is refused before the SDK builds a session from it.
  */
-export class ObservedOpenKeyProvider extends OpenKeyProvider {
+export class ObservedOpenKeyProvider extends OpenKeyProvider implements OpenKeyAuthorizeTinyCloud {
   private failure: WalletApprovalFailure | undefined;
   /** Counts approvals asked for; an answer to an older one is not the current approval's. */
   private asked = 0;
 
+  private readonly keyIdPin: string | undefined;
+
   constructor(
-    openkey: OpenKey,
+    private readonly authorizer: OpenKey,
     auth: AuthResult,
     private readonly signedInAddress: string,
     private readonly verify: SignatureVerifier = verifyEip191MessageSignature,
     private readonly guard?: ApprovalGuard,
   ) {
-    super(openkey, auth);
+    super(authorizer, auth);
+    this.keyIdPin = auth.keyId;
   }
 
   override async request(args: { method: string; params?: any[] }): Promise<any> {
     if (args.method !== "personal_sign") return super.request(args);
     if (this.guard !== undefined) return this.guard(() => this.signObserved(args), { kind: "sign" });
     return this.signObserved(args);
+  }
+
+  /** The versioned sign-in: OpenKey shows its permission review and signs the SIWE it presents (`signedMessage`). */
+  authorizeTinyCloud(request: AuthorizeRequest, opts?: AuthorizeOptions): Promise<AuthorizeResult> {
+    const approve = (): Promise<AuthorizeResult> => this.authorizeObserved(request, opts);
+    return this.guard === undefined ? approve() : this.guard(approve, { kind: "sign" });
+  }
+
+  private async authorizeObserved(request: AuthorizeRequest, opts: AuthorizeOptions): Promise<AuthorizeResult> {
+    this.failure = undefined;
+    const mine = ++this.asked;
+    let result: AuthorizeResult;
+    try {
+      // The signed-in key is named, as the byte-exact path names it: a reopened session has no connection to infer it from.
+      const keyId = request.keyId ?? this.keyIdPin;
+      result = await trackWalletApproval(() => this.authorizer.authorizeTinyCloud(keyId === undefined ? request : { ...request, keyId }, opts));
+    } catch (caught) {
+      if (mine === this.asked) this.failure = approvalFailureOf(caught);
+      throw caught;
+    }
+    if (result.address.toLowerCase() !== this.signedInAddress.toLowerCase()) {
+      if (mine === this.asked) this.failure = "wrong-account";
+      throw new Error("wallet-approval-wrong-account");
+    }
+    // OpenKey lets the person remove a grant that is not required. The library needs every grant it asks for.
+    const dropped = unauthorizedRecapCapabilities(extractRecapAttenuations(request.siwe), extractRecapAttenuations(result.signedMessage));
+    if (dropped.length > 0) throw new Error("sign-in-approval-narrowed");
+    return result;
   }
 
   private async signObserved(args: { method: string; params?: unknown[] }): Promise<unknown> {
@@ -262,6 +302,12 @@ export interface SignInWithManifestOptions extends ManifestScope {
   readonly persistSession?: boolean;
   /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000), or exactly `SIGN_IN_SESSION_MS`. Default one hour. */
   readonly expiry?: number;
+  /**
+   * Sign in through OpenKey's versioned `authorizeTinyCloud` (the Web SDK's `config.openkey`) instead of a byte-exact
+   * signature: the person reviews the permissions in OpenKey and the SDK builds the session from what OpenKey signed.
+   * Every other signature (space hosting, share roots, revokes) stays on the byte-exact path. Default false.
+   */
+  readonly versionedSignIn?: boolean;
   /**
    * Waits, after sign-in and space hosting, for the SDK's background sync of the
    * account's own space registry, for at most `timeoutMs` (default 15 s). It
@@ -402,6 +448,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     const tinycloud = new TinyCloudWeb({
       provider,
       signStrategy: { type: "callback", handler: (request: SignRequest) => guardApproval(() => explicitOpenKeyApproval(session, request), { kind: "sign", purpose: request.purpose }) },
+      ...(options.versionedSignIn === true ? { openkey: { client: provider, mode: "iframe" as const } } : {}),
       ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
       // A new sender cannot resolve a signed location record before its first
       // session exists. Use the explicitly configured owner-node choice only
@@ -581,7 +628,7 @@ export async function createTinyCloudClient(
   // replaced by a fresh sign-in.
   // Every OpenKey approval that completes here needed OpenKey's sign-in in this tab, so Share's Sign out may end it.
   const guardApproval: ApprovalGuard = async (wait) => { const result = await wait(); markOpenKeySignedInHere(); return result; };
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS, versionedSignIn: true });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }
