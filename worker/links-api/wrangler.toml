@@ -19,7 +19,9 @@ crons = ["* * * * *"]
 
 [vars]
 LINKS_AUDIENCE = "https://api.tinycloud.xyz"
-LINKS_CORS_ORIGINS = "https://share.tinycloud.xyz"
+# Share, then the TinyCloud Home app (TC-3195): its three web sites, the iOS and Android shells (Capacitor), and the
+# macOS and Windows desktop shells (Tauri).
+LINKS_CORS_ORIGINS = "https://share.tinycloud.xyz,https://tinycloud.one,https://home.tinycloud.xyz,https://tinycloud.chat,capacitor://localhost,https://localhost,tauri://localhost,http://tauri.localhost"
 # ADDRESS_SALT is a secret (16+ characters), set by the operator. Never committed.
 
 # Workers Logs, with invocation logs off: the only log lines are the structured console lines of the scheduled
