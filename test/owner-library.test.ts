@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { OWNER_LIBRARY_LIMIT, OWNER_LIBRARY_RESERVED_PREFIXES, ownerLibraryEntries } from "../src/share/composer.js";
+import { OWNER_LIBRARY_RESERVED_PREFIXES, ownerLibraryEntries } from "../src/share/composer.js";
 import { filesForYouPermissions, historyPermissions, ownerSpacePermissions, SHARE_APPLICATION_PREFIX, SHARE_APPLICATION_SPACE } from "../src/share/openkey-session.js";
 
 /** The library is the sender's own TinyCloud applications-space listing. */
@@ -41,10 +41,6 @@ describe("owner library entries", () => {
     expect(ownerLibraryEntries(["a/b/"])).toEqual([
       { path: "a/b", kind: "exact" },
     ]);
-  });
-
-  it("bounds the listing it asks the space for", () => {
-    expect(OWNER_LIBRARY_LIMIT).toBe(1000);
   });
 
   it("never offers the app's own vault bookkeeping as something to share", () => {

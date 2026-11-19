@@ -39,6 +39,15 @@ const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.SHARE_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
 const MAX_SIGNIN_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SIGNIN_PROMPTS ?? 2);
 const MAX_SHARE_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SHARE_PROMPTS ?? 1);
+// What OpenKey's extra warning (TC-2927) must show at sign-in: Share's library asks to decrypt on the
+// owner's whole encryption network and on its share/ prefix (src/share/openkey-session.ts, shareManifest).
+// The whole-network card is required: without it this is not Share's sign-in request. No other step
+// may reach the warning.
+const ELEVATED_SIGN_IN = {
+  site: new URL(SHARE).host,
+  cards: ["Unlock all your encrypted data", "Unlock encrypted items in a folder named share"],
+  required: ["Unlock all your encrypted data"],
+};
 // Share's failure copy (src/share/sender-failure.ts) ends a sign-in or a share.
 const FAILURE_COPY = /temporarily unavailable|couldn't reach tinycloud|could not be completed|went wrong|session expired|isn't set up|storage isn't ready|didn't go through|couldn't create/i;
 
@@ -133,8 +142,11 @@ async function clickButton(frame, label) {
 /** When each OpenKey review frame first appeared (for a dropped click's timing). */
 const reviewSeen = new WeakMap();
 
-/** Approve every OpenKey sign review until `done` holds; Share's failure copy ends the wait. */
-async function approveUntil(page, done, counter, timeout) {
+/**
+ * Approve every OpenKey sign review until `done` holds; Share's failure copy ends the wait, and so
+ * does an extra warning (TC-2927) that doesn't show what `elevated` expects for this step.
+ */
+async function approveUntil(page, done, counter, timeout, elevated = null) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const sign = frameAt(page, "/widget/embed/sign");
@@ -144,7 +156,7 @@ async function approveUntil(page, done, counter, timeout) {
     // A click counts only once OpenKey took it (review closed, "Signing…", or a sign call after the
     // click); a disabled button alone is not taken. A dropped one is reported and clicked again.
     if (sign !== undefined && await clickApprove({
-      sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign),
+      sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign), elevated,
       closed: () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(),
       signedSince: (fromMs) => requests.some((entry) => isSignature(entry) && entry.atMs >= fromMs),
     }).catch(() => false)) {
@@ -152,6 +164,7 @@ async function approveUntil(page, done, counter, timeout) {
       (report.reviews ??= []).push({ during: counter, atMs: since(), grants: scrub(review.replace(/^.*?(do not want to grant\.|grant\.)\s*/i, "").replace(/\s*Advanced details.*$/i, "")).slice(0, 240) });
       await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
     }
+    if (report.elevatedRefused) throw new Error(`OpenKey's extra warning was not clicked: ${report.elevatedRefused.reason}`);
     if (await page.evaluate(done).catch(() => false)) return;
     const copy = await page.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`).catch(() => "");
     if (FAILURE_COPY.test(copy)) { report.shareCopy = copy.replace(/\s+/g, " ").trim().slice(0, 200); throw new Error("Share showed its failure copy"); }
@@ -245,7 +258,7 @@ try {
   }
 
   setStage("share-sign-in");
-  await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
+  await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000, ELEVATED_SIGN_IN);
   report.timingsMs.signIn = since(signInStart);
   // Counted approvals must equal OpenKey's signatures for the step (approval-click.mjs, signatureMismatch):
   // more signatures = a hidden review; fewer = a counted click OpenKey never signed for.
@@ -253,6 +266,9 @@ try {
   const signInMismatch = signatureMismatch(report.prompts.signIn, report.signatures.signIn);
   assert(signInMismatch === null, `sign-in: ${signInMismatch}`);
   assert(report.prompts.signIn <= MAX_SIGNIN_PROMPTS, `sign-in needed ${report.prompts.signIn} OpenKey approvals (max ${MAX_SIGNIN_PROMPTS})`);
+  // Share's sign-in asks to decrypt on the whole network, so OpenKey must have shown its extra warning
+  // and the smoke's "Allow and approve" must have been taken.
+  assert((report.elevatedScreens ?? []).some((screen) => screen.during === "signIn" && screen.allowed), "sign-in: OpenKey's extra warning for Share's decrypt was not shown and allowed");
 
   setStage("share-create");
   writeFileSync(join(temporary, "smoke.md"), `# Share sender smoke\n\n${nonce}\n`);

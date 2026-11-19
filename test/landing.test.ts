@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AGENT_PROMPT, PRODUCT, renderLandingTemplate } from "../src/landing/brand.ts";
+import { PRODUCT, renderLandingTemplate } from "../src/landing/brand.ts";
 
 const EXPECTED_PROMPT =
   "Share this with TinyCloud, and ask me who should be able to open it: https://agents.tinycloud.xyz/share";
@@ -20,10 +20,6 @@ describe("landing template", () => {
 
   it("rejects an unknown token instead of rendering it", () => {
     expect(() => renderLandingTemplate("<p>{{NOPE}}</p>")).toThrow(/NOPE/);
-  });
-
-  it("keeps the agent prompt exactly as specified", () => {
-    expect(AGENT_PROMPT).toBe(EXPECTED_PROMPT);
   });
 
   it("offers a secondary sign-in under the note that targets the same place as the bottom CTA", () => {

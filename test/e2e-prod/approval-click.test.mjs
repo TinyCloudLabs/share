@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import puppeteer from "puppeteer";
-import { approvePick, boxMoved, clickApprove, clickState, signatureMismatch, signaturesFor, signaturesIn, signedSince, watchSignatures } from "./approval-click.mjs";
-import { APPROVE_NAME } from "./smoke-redact.mjs";
+import { approvePick, boxMoved, clickApprove, clickState, elevatedRefusal, elevatedScreen, signatureMismatch, signaturesFor, signaturesIn, signedSince, watchSignatures } from "./approval-click.mjs";
+import { APPROVE_NAME, ELEVATED_ALLOW_NAME } from "./smoke-redact.mjs";
 
 // jsdom has no layout: an element counts as visible unless it (or an ancestor) is `hidden`.
 const doc = (html) => {
@@ -203,6 +203,93 @@ test("watchSignatures sees sign calls from a cross-origin iframe and a popup, dr
 
     assert.equal(signaturesFor(calls, "review"), 2, "the iframe's and the popup's sign calls, each once; the aborted one not at all");
     assert.equal(calls.open.size, 0, "a failed call does not stay open");
+  } finally {
+    await browser.close();
+  }
+});
+
+// OpenKey's extra warning for elevated permissions (TC-2927), as elevated-warning.svelte renders it.
+const SITE = "share.tinycloud.xyz";
+const NETWORK = "Unlock all your encrypted data";
+const SHARE_PREFIX = "Unlock encrypted items in a folder named share";
+const WHOLE = `<button class="reject">Cancel the whole request</button><button class="allow">Allow and approve</button>`;
+const SPLIT = `<button class="continue" disabled>Continue</button>`;
+const warning = (cards, finish = WHOLE, site = SITE) => `<div class="elevated" role="dialog" aria-modal="true" aria-labelledby="elevated-title">`
+  + `<header><h1 id="elevated-title" tabindex="-1">${site} is asking for more access</h1><p>${site} sent this as one request, so you can approve all of it or none of it.</p></header>`
+  + cards.map((card, index) => `<section role="group" aria-labelledby="elevated-card-${index}"><h2 id="elevated-card-${index}"><span>${card}</span><span>Sensitive</span></h2><p>${site} could unlock it.</p></section>`).join("")
+  + `<div class="finish">${finish}</div><p role="status" aria-live="polite"></p></div>`;
+const EXPECTED = { site: SITE, cards: [NETWORK, SHARE_PREFIX], required: [NETWORK] };
+const facts = (html) => {
+  const found = elevatedScreen(ELEVATED_ALLOW_NAME.source, doc(html));
+  return found.shown ? { title: found.title, cards: found.cards, whole: found.allow !== null } : null;
+};
+
+test("the elevated warning is read by role: its title, card headings without the pill, and Allow and approve only for a whole request", () => {
+  assert.deepEqual(facts(warning([NETWORK, SHARE_PREFIX])), { title: `${SITE} is asking for more access`, cards: [NETWORK, SHARE_PREFIX], whole: true });
+  assert.equal(facts(warning([NETWORK], SPLIT)).whole, false, "a split request ends in Continue, never clicked");
+  assert.equal(facts(warning([NETWORK], `<button class="allow" disabled>Allow and approve</button>`)).whole, false);
+  assert.equal(facts(`<div role=dialog><button>Cancel</button><button>Approve</button></div>`), null);
+  assert.equal(facts(`<div hidden>${warning([NETWORK])}</div>`), null);
+  // Outside the warning, Allow and approve is still not an approval label.
+  assert.deepEqual(pick(`<div role=dialog><button>Cancel</button><button>Allow and approve</button></div>`), { button: null, rejected: "Allow and approve" });
+});
+
+test("Allow and approve is refused unless the warning shows exactly what the step's request explains", () => {
+  const shown = (cards, finish, site) => facts(warning(cards, finish, site));
+  assert.equal(elevatedRefusal(shown([NETWORK, SHARE_PREFIX]), EXPECTED), null);
+  assert.equal(elevatedRefusal(shown([NETWORK]), EXPECTED), null, "the share/ card is allowed, not required");
+  assert.equal(elevatedRefusal(shown([NETWORK]), null), "not expected at this step");
+  assert.match(elevatedRefusal(shown([SHARE_PREFIX]), EXPECTED), /^missing permission: Unlock all your encrypted data$/);
+  assert.match(elevatedRefusal(shown([NETWORK, "Create encryption keys anywhere in your account"]), EXPECTED), /^unexpected permission: Create encryption keys/);
+  assert.match(elevatedRefusal(shown([NETWORK], WHOLE, "evil.example"), EXPECTED), /^unexpected title/);
+  assert.match(elevatedRefusal(shown([NETWORK], SPLIT), EXPECTED), /^no Allow and approve/);
+});
+
+test("clickApprove through the elevated warning: one approval when Allow and approve signs, refused and never clicked otherwise", async () => {
+  const browser = await puppeteer.launch({ args: process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [] });
+  try {
+    const page = await browser.newPage();
+    // A stand-in for OpenKey's review: Approve opens the warning in its place; Allow and approve brings the review back
+    // and presses Approve itself ("Signing…"), unless `stall` is set. Scoped, as setContent keeps the page's globals.
+    const flow = (cards, { stall = false } = {}) => `<div id=root></div><script>(() => {
+      const root = document.getElementById("root");
+      const count = (name) => { document.body.dataset[name] = Number(document.body.dataset[name] ?? 0) + 1; };
+      const review = (label) => { root.innerHTML = '<div role="dialog"><button>Cancel</button><button id="approve"' + (label === "Signing…" ? " disabled" : "") + '>' + label + '</button></div>'; };
+      review("Approve");
+      root.addEventListener("click", (event) => {
+        if (event.target.id === "approve") { count("approveClicks"); root.innerHTML = ${JSON.stringify(warning(cards))}; }
+        if (event.target.classList.contains("allow")) { count("allowClicks"); if (!${stall}) setTimeout(() => review("Signing…"), 100); }
+      });
+    })();</script>`;
+    const clicks = () => page.evaluate(() => ({ approve: Number(document.body.dataset.approveClicks ?? 0), allow: Number(document.body.dataset.allowClicks ?? 0) }));
+    let clock = 0;
+    const run = (report, elevated) => clickApprove({ sign: page.mainFrame(), during: "signIn", report, closed: () => false, at: () => ++clock, stage: () => "share-sign-in", reviewSeenAt: 0, takenMs: 1_000, elevated });
+
+    await page.setContent(flow([NETWORK, SHARE_PREFIX]));
+    const allowed = {};
+    assert.equal(await run(allowed, EXPECTED), true, "Approve, then Allow and approve, then Signing…: taken");
+    assert.deepEqual(await clicks(), { approve: 1, allow: 1 });
+    assert.equal(allowed.elevatedScreens.length, 1);
+    assert.deepEqual({ ...allowed.elevatedScreens[0], atMs: 0 }, { during: "signIn", stage: "share-sign-in", atMs: 0, title: `${SITE} is asking for more access`, cards: [NETWORK, SHARE_PREFIX], wholeRequest: true, allowed: true });
+    assert.equal(allowed.approveClicksDropped, undefined, "opening the warning is not a dropped Approve");
+    assert.equal(allowed.elevatedRefused, undefined);
+
+    await page.setContent(flow([NETWORK]));
+    const unexpected = {};
+    assert.equal(await run(unexpected, null), false, "a step that expects no warning");
+    assert.deepEqual(await clicks(), { approve: 1, allow: 0 }, "Allow and approve was clicked at a step that expects no warning");
+    assert.deepEqual(unexpected.elevatedRefused, { during: "signIn", stage: "share-sign-in", reason: "not expected at this step" });
+    assert.equal(unexpected.elevatedScreens[0].allowed, false);
+    assert.equal(await run(unexpected, null), false, "the warning still showing is refused again, never clicked");
+    assert.deepEqual(await clicks(), { approve: 1, allow: 0 });
+
+    await page.setContent(flow([NETWORK], { stall: true }));
+    const stalled = {};
+    assert.equal(await run(stalled, EXPECTED), false, "Allow and approve that never signs is not taken");
+    assert.deepEqual(await clicks(), { approve: 1, allow: 1 });
+    assert.equal(stalled.elevatedScreens[0].allowed, false);
+    assert.equal(stalled.approveClicksNotTaken, 1);
+    assert.equal(stalled.approveClicksDropped[0].screen, "elevated");
   } finally {
     await browser.close();
   }
