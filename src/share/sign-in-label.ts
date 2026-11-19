@@ -6,7 +6,7 @@
 
 import { hasInvisibleOrSpecialSpace } from "./invisible-text.mjs";
 
-/** A sign-in option outside what the helper allows (an expiry over an hour, a domain that is not a host name). */
+/** A sign-in option outside what the helper allows (an expiry it does not accept, a domain that is not a host name). */
 export class SignInOptionError extends Error {
   constructor(option: string, detail: string) {
     super(`sign-in-option-${option}: ${detail}`);

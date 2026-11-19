@@ -7405,6 +7405,12 @@
           "windowSeconds": 86400
         }
       ],
+      "createVerified": [
+        {
+          "limit": 2000,
+          "windowSeconds": 86400
+        }
+      ],
       "invalidRequests": [
         {
           "limit": 60,
@@ -7435,6 +7441,14 @@
         {
           "limit": 120,
           "windowSeconds": 60
+        }
+      ]
+    },
+    "allAddresses": {
+      "createSigned": [
+        {
+          "limit": 3000,
+          "windowSeconds": 86400
         }
       ]
     },

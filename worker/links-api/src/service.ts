@@ -104,6 +104,8 @@ export const rateKeys = {
   issuerCreate: (issuer: string, windowSeconds: number) => `ic:${issuer}:${windowSeconds}`,
   issuerDelete: (issuer: string, windowSeconds: number) => `id:${issuer}:${windowSeconds}`,
   addressCreate: (rateHash: string, windowSeconds: number) => `ac:${rateHash}:${windowSeconds}`,
+  addressVerifiedCreate: (rateHash: string) => `av:${rateHash}:${LIMITS.addressVerifiedCreate.windowSeconds}`,
+  publicCreate: () => `pc:${LIMITS.publicCreate.windowSeconds}`,
   addressRefused: (rateHash: string) => `ar:${rateHash}`,
   addressRead: (rateHash: string) => `ad:${rateHash}`,
   addressDelete: (rateHash: string) => `ax:${rateHash}`,
@@ -129,6 +131,8 @@ interface RequestContext {
   readonly liveHash: string;
   readonly origin: string | null;
   readonly cors: CorsMode;
+  /** Set for a create past the address check: a refusal then counts against the address's daily attempt budget. */
+  readonly countsDailyAttempts?: boolean;
 }
 
 function errorBody(code: ErrorCode): { error: ErrorCode } {
@@ -145,12 +149,30 @@ async function countMetric(deps: ServiceDeps, name: string): Promise<void> {
 
 async function refuse(
   ctx: RequestContext,
-  code: ErrorCode,
-  reason: string,
-  extraHeaders: Record<string, string> = {},
+  givenCode: ErrorCode,
+  givenReason: string,
+  givenHeaders: Record<string, string> = {},
   countAsRefused = false,
 ): Promise<Outcome> {
-  if (countAsRefused) {
+  let code = givenCode;
+  let reason = givenReason;
+  let extraHeaders = givenHeaders;
+  let countsRefused = countAsRefused;
+  if (ctx.countsDailyAttempts) {
+    // Once the day's budget is spent, a refusal is rate_limited and writes no further counter; the minute
+    // window, counted at the address check, still bounds how many arrive.
+    const day = LIMITS.addressCreate[1];
+    const key = rateKeys.addressCreate(ctx.rateHash, day.windowSeconds);
+    const left = await ctx.deps.storage.peek(key, day.limit, day.windowSeconds, ctx.nowSeconds);
+    const spent = left.allowed ? await ctx.deps.storage.hit(key, day.limit, day.windowSeconds, ctx.nowSeconds) : left;
+    if (!spent.allowed) {
+      code = "rate_limited";
+      reason = "address_rate";
+      extraHeaders = retryAfter(spent.retryAfter);
+      countsRefused = false;
+    }
+  }
+  if (countsRefused) {
     // Requests refused before the signature check count against the per-address refusal limit.
     try {
       await ctx.deps.storage.hit(
@@ -312,10 +334,18 @@ async function handleCreate(request: Request, ctx: RequestContext): Promise<Outc
     await countMetric(deps, "blocked.address");
     return refuse(ctx, "blocked", "address_blocked");
   }
-  const limited = await addressLimits(ctx, LIMITS.addressCreate, rateKeys.addressCreate, true);
+  // The minute window counts every attempt here. The daily window counts only the refusals that follow, so an
+  // address whose refused attempts used up the day can still create with valid credentials.
+  const limited = await addressLimits(ctx, [LIMITS.addressCreate[0]], rateKeys.addressCreate, true);
   if (limited !== null) {
     return limited;
   }
+  return createPastAddressCheck(request, { ...ctx, countsDailyAttempts: true }, parsed);
+}
+
+async function createPastAddressCheck(request: Request, ctx: RequestContext, parsed: Record<string, unknown>): Promise<Outcome> {
+  const { deps } = ctx;
+  const { storage, config } = deps;
   // 3. top-level fields and credentials
   const signed = "signature" in parsed;
   if (!hasExactKeys(parsed, signed ? ["body", "header", "signature"] : ["body", "header"])) {
@@ -376,6 +406,23 @@ async function handleCreate(request: Request, ctx: RequestContext): Promise<Outc
     }
     apiKeyId = key.keyId;
   }
+  // Checked here, before any write, and counted only once the record is stored. Concurrent creates can pass
+  // the check together, so the count can overshoot by at most the minute window's 30 attempts. These two
+  // refusals write no daily counter: they would only add writes for an address or a day already at its limit.
+  const verifiedDay = LIMITS.addressVerifiedCreate;
+  const verified = await storage.peek(rateKeys.addressVerifiedCreate(ctx.rateHash), verifiedDay.limit, verifiedDay.windowSeconds, ctx.nowSeconds);
+  if (!verified.allowed) {
+    return refuse({ ...ctx, countsDailyAttempts: false }, "rate_limited", "address_verified_rate", retryAfter(verified.retryAfter));
+  }
+  // Signed creates share one daily ceiling, so a few addresses cannot spend D1's daily write allowance. Approved
+  // API keys are outside it, bounded by their own per-key limit. Concurrent creates can overshoot it slightly.
+  if (signed) {
+    const ceiling = await storage.peek(rateKeys.publicCreate(), LIMITS.publicCreate.limit, LIMITS.publicCreate.windowSeconds, ctx.nowSeconds);
+    if (!ceiling.allowed) {
+      await countMetric(deps, "capacity.public_create_ceiling");
+      return refuse({ ...ctx, countsDailyAttempts: false }, "capacity", "public_create_ceiling", retryAfter(ceiling.retryAfter));
+    }
+  }
   // 8. block list
   if (await storage.isBlocked("issuer", header.issuer)) {
     await countMetric(deps, "blocked.issuer");
@@ -423,6 +470,14 @@ async function insertRecord(
     };
     const outcome = await storage.put(record, ctx.nowSeconds);
     if (outcome === "ok") {
+      try {
+        await storage.hit(rateKeys.addressVerifiedCreate(ctx.rateHash), LIMITS.addressVerifiedCreate.limit, LIMITS.addressVerifiedCreate.windowSeconds, ctx.nowSeconds);
+        if (signed) {
+          await storage.hit(rateKeys.publicCreate(), LIMITS.publicCreate.limit, LIMITS.publicCreate.windowSeconds, ctx.nowSeconds);
+        }
+      } catch (err) {
+        ctx.deps.log(`links.metric_failed ${err instanceof Error ? err.name : "unknown"}`);
+      }
       await countMetric(ctx.deps, `creates.${header.type}`);
       return {
         response: jsonResponse(201, { id: record.id, expiresAt: header.expiresAt }, ctx.cors),

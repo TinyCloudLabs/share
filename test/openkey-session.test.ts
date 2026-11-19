@@ -8,6 +8,7 @@ import {
   createTinyCloudClient,
   filesForYouPermissions,
   MAX_SESSION_MS,
+  SIGN_IN_SESSION_MS,
   ObservedOpenKeyProvider,
   ownerEncryptionNetwork,
   SAVE_COPY_APP_ID,
@@ -20,6 +21,7 @@ import {
   type ApprovalGuard,
 } from "../src/share/openkey-session.js";
 import { isSignInLabel } from "../src/share/sign-in-label.js";
+import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { ManifestRejectedError, SDK_ACCOUNT_REGISTRY_RESOURCES, type ManifestScope } from "../src/share/manifest-policy.js";
 import { signInToCourier } from "../src/courier/session.ts";
 import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flight.js";
@@ -28,7 +30,7 @@ const state = vi.hoisted(() => ({
   config: undefined as Record<string, unknown> | undefined,
   clients: [] as Array<{ config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number; restored: boolean }>,
   // OpenKey instances made, their app names, how many times each flow was closed, and whether connect fails.
-  openKeys: [] as Array<{ appName: unknown; disconnects: number }>,
+  openKeys: [] as Array<{ appName: unknown; disconnects: number; signOuts?: number }>,
   connectError: undefined as unknown,
   onConnect: undefined as undefined | (() => void),
   constructorError: undefined as unknown,
@@ -38,6 +40,9 @@ const state = vi.hoisted(() => ({
   // The SIWE the client's signIn() reports back.
   signInSiwe: undefined as string | undefined,
   registrySync: undefined as undefined | { promise: Promise<unknown> },
+  // A session saved on the device, restored by the first signIn(): one the node accepts, refuses (401, revoked),
+  // cannot be reached for, or one the SDK restores and then refuses to use (it throws).
+  saved: undefined as undefined | "accepted" | "revoked" | "unreachable" | "unusable",
   signed: [] as Array<{ message: string; keyId?: string }>,
   // Who actually signs, and whether the widget answers with a signature at all.
   signer: undefined as { signMessage(input: { message: string }): Promise<string> } | undefined,
@@ -58,9 +63,10 @@ state.sender = SENDER.address;
 // reports the connected address, whoever signed.
 vi.mock("@openkey/sdk", () => ({
   OpenKey: class {
-    private readonly record: { appName: unknown; disconnects: number };
+    private readonly record: { appName: unknown; disconnects: number; signOuts?: number };
     constructor(config?: { appName?: unknown }) { this.record = { appName: config?.appName, disconnects: 0 }; state.openKeys.push(this.record); }
     disconnect() { this.record.disconnects += 1; }
+    async signOut() { this.record.signOuts = (this.record.signOuts ?? 0) + 1; return { requestId: "r", revoked: true }; }
     async connect() { state.openKeyRequests += 1; state.onConnect?.(); if (state.connectError !== undefined) throw state.connectError; return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
     getSessionToken() { return null; }
     tinycloudSigningOptions() { return { endpoint: "https://api.openkey.so/api/delegate/sign", token: null }; }
@@ -85,6 +91,14 @@ vi.mock("@tinycloud/web-sdk", () => ({
       state.clients.push(this.record);
     }
     space() { return { kv: {} }; }
+    private restoreStatus = "idle";
+    get sessionRestoreStatus() { return this.restoreStatus; }
+    get spaceId() { return "applications-space"; }
+    readonly account = { spaces: { get: async () => {
+      if (state.saved === "revoked") return { ok: false, error: { code: "AUTH_DELEGATION_REVOKED", meta: { status: 401 } } };
+      if (state.saved === "unreachable") return { ok: false, error: { code: "NETWORK_ERROR", message: "Failed to fetch" } };
+      return { ok: true, data: {} };
+    } } };
     async restoreSession(): Promise<{ status: string; session?: { address: string; siwe: string | undefined } }> {
       this.record.order.push("restoreSession");
       this.record.restored = state.persisted;
@@ -94,6 +108,9 @@ vi.mock("@tinycloud/web-sdk", () => ({
     async signIn(): Promise<{ address: string; siwe: string | undefined }> {
       this.record.order.push("signIn");
       if (state.signInError !== undefined) throw state.signInError;
+      // Only the first sign-in finds the saved session: a sign-out clears it.
+      this.restoreStatus = state.saved !== undefined && this.record.signedOut === 0 ? "restored" : "logging-in";
+      if (this.restoreStatus === "restored" && state.saved === "unusable") throw new Error("Manifest validation failed");
       if (!this.record.restored && state.simulateSignInApproval) {
         const strategy = this.record.config.signStrategy as CallbackStrategy;
         await strategy.handler({ address: state.sender, chainId: 1, message: "siwe:sign-in", type: "siwe", purpose: "sign-in" });
@@ -101,7 +118,7 @@ vi.mock("@tinycloud/web-sdk", () => ({
       }
       return { address: state.sender, siwe: state.signInSiwe };
     }
-    async signOut(): Promise<void> { this.record.signedOut += 1; state.persisted = false; }
+    async signOut(): Promise<void> { this.record.signedOut += 1; state.persisted = false; this.record.order.push("signOut"); this.restoreStatus = "idle"; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
   },
 }));
@@ -176,6 +193,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.persisted = false;
     state.openKeyRequests = 0;
     state.simulateSignInApproval = false;
+    state.saved = undefined;
     localStorage.clear();
     sessionStorage.clear();
   });
@@ -234,6 +252,14 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
       "agents/kv/xyz.tinycloud.courier/me/orders/ tinycloud.kv/put",
     ].sort());
     expect(request.registryRecords).toEqual([]);
+  });
+
+  it("Courier's sign-out asks OpenKey to sign out, because Courier connected OpenKey in this tab, even with no tab mark", async () => {
+    sessionStorage.clear();
+    const courier = await signInToCourier(CONFIG, { approval: () => undefined, status: () => undefined });
+    expect(sessionStorage.length).toBe(0);
+    expect(await courier.signOut()).toBe("openkey-ended");
+    expect(state.openKeys[0]!.signOuts).toBe(1);
   });
 
   it("the library and Save register under different app ids, so an account using both never has one overwrite the other's registry record", async () => {
@@ -388,6 +414,41 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     let stepsWhenHandedOut: string[] | undefined;
     await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, onClient: () => { stepsWhenHandedOut = [...state.clients[0]!.order]; } });
     expect(stepsWhenHandedOut).toEqual([]);
+  });
+
+  describe("a session saved on the device (persistSession)", () => {
+    const library = () => signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-library-" });
+
+    it("resumes a saved session the node still accepts: no sign-out and no second sign-in", async () => {
+      state.saved = "accepted";
+      await library();
+      expect(state.clients[0]!.order).toEqual(["signIn", "host:account"]);
+    });
+
+    it("clears a saved session the node refuses (revoked) and signs in afresh before anything is hosted", async () => {
+      state.saved = "revoked";
+      await library();
+      expect(state.clients[0]!.order).toEqual(["signIn", "signOut", "signIn", "host:account"]);
+    });
+
+    it("clears a saved session the SDK restores but cannot use, and signs in afresh", async () => {
+      state.saved = "unusable";
+      const signedIn = await library();
+      expect(signedIn.session!.address).toBe(SENDER.address);
+      expect(state.clients[0]!.order).toEqual(["signIn", "signOut", "signIn", "host:account"]);
+    });
+
+    it("keeps a saved session when the node cannot be reached: that says nothing about the session", async () => {
+      state.saved = "unreachable";
+      await library();
+      expect(state.clients[0]!.order).toEqual(["signIn", "host:account"]);
+    });
+
+    it("a fresh sign-in that fails is the sign-in's own failure: nothing is retried", async () => {
+      state.signInError = new Error("approval-cancelled");
+      await expect(library()).rejects.toThrow("approval-cancelled");
+      expect(state.clients[0]!.order).toEqual(["signIn", "signOut"]);
+    });
   });
 });
 
@@ -732,7 +793,9 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG })).resolves.toBeDefined();
     // The library's decrypt grant is for the signed-in account's own network, not anyone's.
     const foreign = shareManifest(SENDER.address);
-    foreign.permissions = foreign.permissions!.map((entry) => entry.service === "tinycloud.encryption" ? { ...entry, path: ownerEncryptionNetwork(OTHER.address) } : entry);
+    // The share/ prefix row (option M) moves to the other account's checksummed prefix, the bare-network row to its bare network.
+    const otherPrefix = pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: OTHER.address }) })[0]!.path;
+    foreign.permissions = foreign.permissions!.map((entry) => entry.service === "tinycloud.encryption" ? { ...entry, path: entry.path.endsWith("/share/") ? otherPrefix : ownerEncryptionNetwork(OTHER.address) } : entry);
     await expect(signInWithManifest({ manifest: () => foreign, ...SHARE_MANIFEST_SCOPE, config: CONFIG })).rejects.toMatchObject({ code: "path-not-allowed" });
   });
 
@@ -793,12 +856,14 @@ describe("signInWithManifest options for an app-install flow", () => {
     expect(state.openKeys).toEqual([]);
   });
 
-  it("expiry shortens the session and can never lengthen it past one hour", async () => {
+  it("expiry shortens the session and never lengthens it past one hour, except to exactly the sign-in session tier", async () => {
     await signInWithManifest({ ...base, expiry: 15 * 60 * 1000 });
     expect(state.clients[0]!.config.sessionExpirationMs).toBe(900_000);
     await signInWithManifest({ ...base, expiry: MAX_SESSION_MS });
     expect(state.clients[1]!.config.sessionExpirationMs).toBe(3_600_000);
-    for (const expiry of [MAX_SESSION_MS + 1, 24 * 60 * 60 * 1000, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await signInWithManifest({ ...base, expiry: SIGN_IN_SESSION_MS });
+    expect(state.clients[2]!.config.sessionExpirationMs).toBe(30 * 24 * 60 * 60 * 1000);
+    for (const expiry of [MAX_SESSION_MS + 1, 24 * 60 * 60 * 1000, SIGN_IN_SESSION_MS - 1, SIGN_IN_SESSION_MS + 1, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       state.openKeys.length = 0;
       await expect(signInWithManifest({ ...base, expiry }), String(expiry)).rejects.toBeInstanceOf(SignInOptionError);
       expect(state.openKeys, `OpenKey must not open for expiry ${expiry}`).toEqual([]);
@@ -866,5 +931,14 @@ describe("ObservedOpenKeyProvider guards the wallet route too", () => {
     await expect(provider.request({ method: "personal_sign", params: [hex, SENDER.address] })).resolves.toBe(state.providerSignature);
     await provider.request({ method: "eth_chainId" });
     expect(waits).toEqual(["guarded"]);
+  });
+
+  it.each([["plain text", "hello"], ["odd hex", "0xabc"], ["empty hex", "0x"], ["not a string", 42]])("refuses a personal_sign whose message is %s, without asking OpenKey to sign", async (_label, param) => {
+    const ask = vi.spyOn(Object.getPrototypeOf(ObservedOpenKeyProvider.prototype) as { request(args: unknown): Promise<unknown> }, "request");
+    state.providerSignature = await SENDER.signMessage({ message: "hello" });
+    const provider = new ObservedOpenKeyProvider({} as never, {} as never, SENDER.address);
+    await expect(provider.request({ method: "personal_sign", params: [param, SENDER.address] })).rejects.toThrow("wallet-approval-unreadable-message");
+    expect(ask).not.toHaveBeenCalled();
+    ask.mockRestore();
   });
 });

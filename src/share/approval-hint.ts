@@ -12,7 +12,7 @@ import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 
 /** After this long without an answer the hint adds where the window may be. */
 export const APPROVAL_SLOW_AFTER_MS = 15_000;
-/** After this long the hint says the wait has gone on too long. Matches the wallet request's own 60 s life. */
+/** After this long the hint says the wait has gone on too long. Matches a signed wallet request's own 60 s life; a hint that can cover opening OpenKey (up to five minutes) passes a longer `timeoutAfterMs`. */
 export const APPROVAL_TIMEOUT_AFTER_MS = 60_000;
 
 export const APPROVAL_SLOW_COPY = "Can't see the OpenKey window? It may be behind this tab or blocked as a pop-up. Cancel and try again.";
