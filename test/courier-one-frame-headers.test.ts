@@ -33,7 +33,7 @@ describe("TinyCloud One framing of /courier", () => {
   it("keeps the rest of the /courier policy (frame-src, connect-src, trusted types) as it was", () => {
     const policy = policyFor(template, "/courier");
     expect(directive(policy, "frame-src")).toEqual(["'self'", "https://openkey.so"]);
-    expect(directive(policy, "connect-src")).toEqual(["'self'", "https://tee.node.tinycloud.xyz", "https://registry.tinycloud.xyz", "https://openkey.so"]);
+    expect(directive(policy, "connect-src")).toEqual(["'self'", "https://node.tinycloud.xyz", "https://tee.node.tinycloud.xyz", "https://registry.tinycloud.xyz", "https://openkey.so"]);
     expect(directive(policy, "require-trusted-types-for")).toEqual(["'script'"]);
     expect(directive(policy, "trusted-types")).toEqual(["share-viewer-html", "dompurify", "'allow-duplicates'"]);
   });
