@@ -33,6 +33,7 @@ import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./ap
 import { startCandidateServer } from "./candidate-server.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { scrub } from "./smoke-redact.mjs";
+import { walletSummaryRecorder } from "./wallet-summary.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.SHARE_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
@@ -179,6 +180,14 @@ try {
   }
   browser = await puppeteer.launch({ headless: process.env.HEADED !== "1", args, userDataDir: join(temporary, "profile") });
   const sender = await browser.newPage();
+  await sender.exposeFunction("recordSmokeWallet", walletSummaryRecorder());
+  await sender.evaluateOnNewDocument((openkeyOrigin) => {
+    window.addEventListener("message", (event) => {
+      if (event.origin === openkeyOrigin && event.data?.type === "openkey:auth:response" && event.data.success === true) {
+        void window.recordSmokeWallet(event.data.address);
+      }
+    });
+  }, new URL(OPENKEY).origin);
   const senderPending = track(sender, "sender");
   pending = senderPending;
   await sender.evaluateOnNewDocument(() => {

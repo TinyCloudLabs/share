@@ -12,7 +12,7 @@ const CLI = new URL("./mail-tm.mjs", import.meta.url).pathname;
 const cli = (...args) => spawnSync(process.execPath, ["--import", FAKE, CLI, ...args], { encoding: "utf8" });
 test("a new inbox is private: qa in its name, a random password, and an id", async () => {
   const inbox = await createInbox("share-smoke");
-  assert.match(inbox.address, /^qa-share-smoke-[0-9a-f]{12}@mail\.example$/);
+  assert.match(inbox.address, /^tcqa-share-smoke-[0-9a-f]{12}@mail\.example$/);
   assert.ok(inbox.password.length >= 20);
   assert.ok(inbox.id && inbox.token);
 });
@@ -113,7 +113,7 @@ test("the command line creates an inbox file without printing the address, and d
     assert.equal(created.status, 0);
     assert.deepEqual(JSON.parse(created.stdout), { created: true });
     const { address } = JSON.parse(readFileSync(path, "utf8"));
-    assert.match(address, /^qa-recipient-gate-[0-9a-f]{12}@mail\.example$/);
+    assert.match(address, /^tcqa-recipient-gate-[0-9a-f]{12}@mail\.example$/);
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.ok(!`${created.stdout}${created.stderr}`.includes(address));
     assert.match(cli("create", path).stdout, /must be a new file/);
