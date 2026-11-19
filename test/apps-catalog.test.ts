@@ -72,8 +72,16 @@ describe("apps catalog digests", () => {
   });
 
   it("pins the kit samples to a full commit and checks the kit's own release digest as well", () => {
-    const samples = catalog.apps.filter((app) => app.app_id.startsWith("xyz.tinycloud.sample."));
+    const samples = catalog.apps.filter((app, index, entries) => app.app_id.startsWith("xyz.tinycloud.sample.") && entries.findIndex((candidate) => candidate.app_id === app.app_id) === index);
     expect(samples.map((app) => app.app_id)).toEqual(["xyz.tinycloud.sample.healthlog", "xyz.tinycloud.sample.recipes"]);
+    const healthVersions = catalog.apps.filter((app) => app.app_id === "xyz.tinycloud.sample.healthlog");
+    expect(healthVersions.map((app) => app.bundle.digest)).toEqual([
+      "f10a976986906bbe36a9a6fe1487435255d8a3d7ab4e16bee5c039a7b23242ad",
+      "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014",
+    ]);
+    expect(healthVersions[1]).toMatchObject({ source: { commit: "58760311ff3af940761332c3460f1d9498b56c1f" }, release: { digest: "828057515ba93e2736fc93d1b2e2729de16f826e2bb40dcdbdab3c297e5e5d40" } });
+    expect(healthVersions[1]?.manifest.sha256).toBe("7780a5ac59bba4ec63debe9c4e0f5b43d047c3a75e52efb195fa528fd04bb802");
+    expect(healthVersions[1]?.bundle.files.find((file) => file.path === "manifest.json")?.sha256).toBe(healthVersions[1]?.manifest.sha256);
     for (const app of samples) {
       expect(app.source.tag).toBeNull();
       expect(app.source.commit).toMatch(/^[0-9a-f]{40}$/);
@@ -169,7 +177,7 @@ describe("scripts/vendor-app.mjs", () => {
       env: { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `url.file://${localRepo}.insteadOf`, GIT_CONFIG_VALUE_0: "https://example.test/app-repo" },
     });
 
-  it("pins a tag, replaces a superseded bundle on update, and refuses a branch", () => {
+  it("pins a tag, retains superseded bundle versions on update, and refuses a branch", () => {
     const work = tempDir();
     const repo = join(work, "app-repo");
     mkdirSync(join(repo, "tinycloud", "app", "knowledge"), { recursive: true });
@@ -200,11 +208,17 @@ describe("scripts/vendor-app.mjs", () => {
 
     expect(vendor(`${url}@v2`, catalogFile, publicDir).status).toBe(0); // publisher kept from the entry
     const after = JSON.parse(readFileSync(catalogFile, "utf8"));
-    expect(after.apps).toHaveLength(1);
+    expect(after.apps).toHaveLength(2);
     expect(after.apps[0].bundle.digest).not.toBe(v1.bundle.digest);
+    expect(after.apps[1].bundle.digest).toBe(v1.bundle.digest);
+    expect(after.apps[1]).toEqual(v1);
     expect(after.apps[0].description).toBe("Version two.");
-    expect(readdirSync(join(publicDir, "apps", "b"))).toEqual([after.apps[0].bundle.digest]);
+    expect(readdirSync(join(publicDir, "apps", "b")).sort()).toEqual(after.apps.map((app: { bundle: { digest: string } }) => app.bundle.digest).sort());
     expect(verifyCatalog(after, publicDir)).toEqual([]);
+
+    const repeated = vendor(`${url}@v2`, catalogFile, publicDir);
+    expect(repeated.status).toBe(0);
+    expect(JSON.parse(readFileSync(catalogFile, "utf8")).apps).toHaveLength(2);
 
     const branch = vendor(`${url}@main`, catalogFile, publicDir);
     expect(branch.status).toBe(1);

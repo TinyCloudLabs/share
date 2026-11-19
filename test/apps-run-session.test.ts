@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { PortableDelegation } from "@tinycloud/web-sdk";
 import type { Manifest } from "@tinycloud/sdk-core";
 import type { ScopedPrefix } from "../src/share/manifest-policy.ts";
 import * as sdkCore from "@tinycloud/sdk-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+type WebSdkModule = typeof import("@tinycloud/web-sdk");
 
 import { catalog } from "../src/apps/catalog.ts";
-import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
-import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
+import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
+import { type PreparedApp, type RunPorts, installRecordPlan, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
 import { isSignInLabel } from "../src/share/sign-in-label.ts";
 import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
@@ -16,14 +18,26 @@ import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixture
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const SIBLING = "xyz.tinycloud.sample.healthlog2";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH)!;
+const previousEntry = catalog.apps.find((candidate) => candidate.app_id === HEALTH && candidate.bundle.digest.startsWith("dc3ec19f"))!;
 const appFiles = entry.bundle.files.filter((file) => !file.path.startsWith("knowledge/"));
 
 interface SignInCall { options: Record<string, unknown>; guard: (wait: () => Promise<unknown>) => Promise<unknown>; fake: FakeSignIn }
 interface FakeSignIn {
-  tinycloud: { kvForSpace: () => unknown; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn> };
+  tinycloud: {
+    kvForSpace: () => unknown;
+    space: (name: string) => { id: string; kv: unknown };
+    sqlForSpace: () => unknown;
+    signOut: ReturnType<typeof vi.fn>;
+    hasPermissions: ReturnType<typeof vi.fn>;
+    requestPermissions: ReturnType<typeof vi.fn>;
+    getRuntimePermissionDelegations: ReturnType<typeof vi.fn>;
+    useRuntimeDelegation: ReturnType<typeof vi.fn>;
+    address: ReturnType<typeof vi.fn>;
+  };
   session: { address: string; openkey: object };
   spaces: Record<string, string>;
   sessionExpiresAt: number;
+  preparePermissionRequest: ReturnType<typeof vi.fn>;
   detach: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 }
@@ -33,46 +47,115 @@ const calls: SignInCall[] = [];
 const puts: string[] = [];
 let kvFiles: Map<string, Uint8Array>;
 /** When set, the listing answers this instead of the keys in `kvFiles`. */
-let kvListResult: { ok: boolean; data?: { keys: string[]; truncated?: boolean }; error?: { code: string } } | undefined;
+let kvListResult: { ok: boolean; data?: { keys: string[]; truncated?: boolean }; error?: { code: string; message?: string; meta?: { status?: unknown } } } | undefined;
 let signInBehaviour: (call: number, options: Record<string, unknown>) => Promise<void> | void;
-let spaces: Record<string, string>;
+let applicationSpaceExists: boolean;
+const spaceCreations: string[] = [];
 /** The node's status for a signed read URL that has bytes (200 by default). */
 let fetchStatus: number;
+let savedSessionExists: boolean;
+let savedGrantManifest: Manifest | undefined;
+let stepUpPrompts: number;
+let acceptStepUp: boolean;
+const stepUpEvents: string[] = [];
+const stepUpRequests: Array<Array<{ service: string; space: string; path: string; actions: string[] }>> = [];
+const stepUpDelegation: PortableDelegation = {
+  cid: "bafy-step-up",
+  delegateDID: "did:key:z6Mkhp7CE4S8DUWvC6D5RXNNu3bA6PJyfd",
+  spaceId: "applications",
+  path: `${HEALTH}/settings/`,
+  actions: ["tinycloud.kv/get", "tinycloud.kv/put"],
+  expiry: new Date(Date.now() + RUNTIME_SESSION_MS),
+  delegationHeader: { Authorization: "Bearer step-up" },
+  ownerAddress: "0x0000000000000000000000000000000000000000",
+  chainId: 1,
+};
 
 vi.mock("../src/email-share/config.js", () => ({ loadSharePublicConfig: async () => ({ shareOrigin: "https://share.example" }) }));
+vi.mock("@tinycloud/web-sdk", async () => {
+  const actual = await vi.importActual<WebSdkModule>("@tinycloud/web-sdk");
+  return {
+    ...actual,
+    BrowserSessionStorage: class {
+      activeAddress(): string | undefined {
+        return savedSessionExists ? "0x0" : undefined;
+      }
+    },
+  };
+});
 vi.mock("../src/share/openkey-session.js", () => ({
   takeWalletApprovalFailure: () => undefined,
   signInWithManifest: async (options: Record<string, unknown>) => {
+    if (!applicationSpaceExists && options["autoCreateSpace"] === true) {
+      applicationSpaceExists = true;
+      spaceCreations.push(INSTALL_SPACE);
+      kvListResult = undefined;
+    }
+    const kv = {
+      list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
+      put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
+        puts.push(key);
+        if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
+        kvFiles.set(key, value);
+        return { ok: true };
+      },
+      createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
+    };
+    const runtimeGrants: PortableDelegation[] = [];
     const fake: FakeSignIn = {
       tinycloud: {
-        kvForSpace: () => ({
-          list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
-          put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
-            puts.push(key);
-            if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
-            kvFiles.set(key, value);
-            return { ok: true };
-          },
-          createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
-        }),
+        kvForSpace: () => kv,
+        space: (name) => ({ id: name, kv }),
         sqlForSpace: () => ({ db: () => ({}) }),
         signOut: vi.fn(async () => undefined),
+        hasPermissions: vi.fn((permissions: Array<{ service: string; space: string; path: string; actions: string[] }>) => {
+          const saved = savedGrantManifest === undefined ? [] : sdkCore.resolveManifest(savedGrantManifest).resources;
+          const runtime = runtimeGrants.map((grant) => ({ service: "tinycloud.kv", space: grant.spaceId, path: grant.path, actions: grant.actions }));
+          const grants = [...saved, ...runtime];
+          return permissions.every((requested) => requested.actions.every((action) => grants.some((grant) =>
+            grant.service === requested.service && grant.space === requested.space && grant.actions.includes(action) &&
+            (grant.path === requested.path || (grant.path.endsWith("/") && requested.path.startsWith(grant.path))),
+          )));
+        }),
+        requestPermissions: vi.fn(async (permissions: Array<{ service: string; space: string; path: string; actions: string[] }>) => {
+          stepUpPrompts += 1;
+          stepUpRequests.push(permissions.map((permission) => ({ ...permission, actions: [...permission.actions] })));
+          stepUpEvents.push("dialog");
+          const hooks = Reflect.get(fake.tinycloud, "_testHooks");
+          const showModal = typeof hooks === "object" && hooks !== null ? Reflect.get(hooks, "showModal") : undefined;
+          if (typeof showModal === "function") {
+            const result = showModal({ appName: "Health Log", additional: permissions });
+            if (acceptStepUp) document.querySelector<HTMLButtonElement>("[data-permission-allow]")?.click();
+            else document.querySelector<HTMLButtonElement>("dialog button:not([data-permission-allow])")?.click();
+            const decision = await result as { approved: boolean };
+            if (!decision.approved) return { approved: false };
+          }
+          runtimeGrants.push(stepUpDelegation);
+          return { approved: true, delegations: [stepUpDelegation] };
+        }),
+        address: vi.fn(() => "0x0000000000000000000000000000000000000000"),
+        getRuntimePermissionDelegations: vi.fn(() => runtimeGrants),
+        useRuntimeDelegation: vi.fn(async (delegation: PortableDelegation) => { runtimeGrants.push(delegation); }),
       },
-      session: { address: "0x0", openkey: {} },
-      spaces,
+      preparePermissionRequest: vi.fn(async () => { stepUpEvents.push("openkey"); }),
+      session: { address: "0x0000000000000000000000000000000000000000", openkey: {} },
+      spaces: applicationSpaceExists ? { [INSTALL_SPACE]: "space-id" } : {},
       sessionExpiresAt: Date.now() + RUNTIME_SESSION_MS,
       detach: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
     };
     const guard = options["guardApproval"] as SignInCall["guard"];
     calls.push({ options, guard, fake });
+    if (!savedSessionExists && options["manifest"] !== undefined) savedGrantManifest = sdkCore.validateManifest(options["manifest"]);
     await signInBehaviour(calls.length, options);
+    if (options["persistSession"] === true) savedSessionExists = true;
     return fake;
   },
 }));
 
 const manifestJson = (): unknown => JSON.parse(readFileSync(join("public", entry.bundle.root, entry.manifest.path), "utf8")) as unknown;
 const catalogManifest = (): Manifest => sdkCore.validateManifest(manifestJson());
+const manifestFor = (candidate: typeof entry): Manifest => sdkCore.validateManifest(JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")));
 
 function seedSaved(overrides: StoredOverrides = {}): void {
   kvFiles = new Map();
@@ -80,7 +163,7 @@ function seedSaved(overrides: StoredOverrides = {}): void {
   for (const [path, bytes] of storedFiles(entry, overrides).entries) kvFiles.set(`${HEALTH}/app/${path}`, bytes);
 }
 
-/** The real ports, with the catalog bundle read from `public/` in place of the network. */
+/** The real ports, with the catalog bundle and saved install record served from memory. */
 function ports(overrides: Partial<RunPorts> = {}): RunPorts {
   return {
     ...createRunPorts(),
@@ -97,9 +180,17 @@ const open = (run: RunPorts = ports(), signal?: AbortSignal) => openApp(HEALTH, 
 beforeEach(() => {
   calls.length = 0;
   puts.length = 0;
-  spaces = { [INSTALL_SPACE]: "space-id" };
+  applicationSpaceExists = true;
+  spaceCreations.length = 0;
   signInBehaviour = () => undefined;
   fetchStatus = 200;
+  savedSessionExists = false;
+  localStorage.clear();
+  savedGrantManifest = undefined;
+  stepUpPrompts = 0;
+  acceptStepUp = true;
+  stepUpRequests.length = 0;
+  stepUpEvents.length = 0;
   seedSaved();
   vi.stubGlobal("fetch", async (url: string) => {
     const key = decodeURIComponent(String(url).slice("https://node.example/signed/".length));
@@ -107,7 +198,7 @@ beforeEach(() => {
     return value === undefined || fetchStatus !== 200 ? new Response("no", { status: fetchStatus === 200 ? 404 : fetchStatus }) : new Response(value.slice().buffer);
   });
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); });
 
 
 describe("readSavedFiles: bounded, never silently cut", () => {
@@ -204,7 +295,7 @@ describe("readSavedFiles: bounded, never silently cut", () => {
   });
 });
 
-describe("opening an installed app: one sign-in per open", () => {
+describe("opening an installed app", () => {
   it("a repeat open signs in once, reads the saved copy, and writes no app file", async () => {
     const app = await open();
     expect(calls).toHaveLength(1);
@@ -270,18 +361,47 @@ describe("opening an installed app: one sign-in per open", () => {
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("a sign-in that fails is a plain failure, and nothing is written", async () => {
-    signInBehaviour = () => { throw new Error("approval closed"); };
-    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+  it("preserves the underlying error when OpenKey sign-in fails", async () => {
+    signInBehaviour = () => { throw new Error("widget rejected the sign request"); };
+    await expect(open()).rejects.toMatchObject({ reason: "failed", detail: "widget rejected the sign request" });
     expect(calls).toHaveLength(1);
     expect(puts).toEqual([]);
   });
 
-  it("an applications space that is not hosted ends the sign-in and fails", async () => {
-    spaces = {};
-    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+  it("auto-creates a missing applications space through the SDK bootstrap", async () => {
+    applicationSpaceExists = false;
+    kvListResult = { ok: false, error: { code: "NETWORK_ERROR", message: "space not found", meta: { status: 404 } } };
+
+    const app = await open();
+
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
+    expect(calls[0]!.fake.spaces).toEqual({ [INSTALL_SPACE]: "space-id" });
+    expect(spaceCreations).toEqual([INSTALL_SPACE]);
+    expect(app.app.entry.bundle.digest).toBe(entry.bundle.digest);
+  });
+
+  it("uses an existing applications space without creating it", async () => {
+    await open();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
+    expect(spaceCreations).toEqual([]);
+  });
+
+  it("does not create spaces during a covered reopen", async () => {
+    savedSessionExists = true;
+    savedGrantManifest = openManifest(manifestFor(entry));
+    await open();
+    const { options } = calls[0]!;
+    expect(options["hostSpaces"]).toBeUndefined();
+    expect(options["autoCreateSpace"]).toBe(true);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(spaceCreations).toEqual([]);
   });
 
   it("a listing that fails ends the sign-in and fails", async () => {
@@ -295,8 +415,63 @@ describe("opening an installed app: one sign-in per open", () => {
     await expect(open()).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
+  it("passes app-scoped restore configuration and checks version grants on the returned client", async () => {
+    kvFiles = new Map();
+    const runPorts = ports();
+    const first = await open(runPorts);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options["persistSession"]).toBe(true);
+    expect(calls[0]!.options["restoreBeforeOpenKey"]).toBe(true);
+    expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
+    expect(calls[0]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
+    await first.session.detach();
 
-  it("the sign-in asks for exactly the union for this app, for one hour, under the reader's name", async () => {
+    await open(runPorts);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
+    expect(calls[1]!.options["restoreBeforeOpenKey"]).toBe(true);
+    expect(calls[1]!.options["autoCreateSpace"]).toBe(true);
+    expect(calls[1]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
+    expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
+  });
+  it("requests only the uncovered version permission and restores its runtime grant on reopen", async () => {
+    savedSessionExists = true;
+    savedGrantManifest = openManifest(manifestFor(previousEntry));
+
+    await open();
+
+    const previous = sdkCore.resolveManifest(openManifest(manifestFor(previousEntry))).resources;
+    const current = sdkCore.resolveManifest(openManifest(manifestFor(entry))).resources;
+    const added = current.filter((resource) => resource.path.includes("settings/") && !previous.some((grant) =>
+      grant.service === resource.service && grant.space === resource.space &&
+      grant.path === resource.path && resource.actions.every((action) => grant.actions.includes(action)),
+    )).map((resource) => ({ service: resource.service, space: resource.space, path: resource.path, actions: [...resource.actions] }));
+    expect(stepUpPrompts).toBe(1);
+    expect(stepUpRequests).toEqual([added]);
+    expect(stepUpEvents).toEqual(["dialog", "openkey"]);
+
+    await open();
+
+    expect(calls[1]!.fake.tinycloud.useRuntimeDelegation).toHaveBeenCalledTimes(1);
+    expect(stepUpRequests).toEqual([added]);
+    expect(stepUpPrompts).toBe(1);
+    expect(stepUpEvents).toEqual(["dialog", "openkey"]);
+  });
+  it("does not open OpenKey or clear the saved session when added-permission approval is cancelled", async () => {
+    savedSessionExists = true;
+    savedGrantManifest = openManifest(manifestFor(previousEntry));
+    acceptStepUp = false;
+
+    await expect(open()).rejects.toMatchObject({ reason: "cancelled" });
+
+    expect(stepUpEvents).toEqual(["dialog"]);
+    expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
+    expect(calls[0]!.fake.detach).toHaveBeenCalledTimes(1);
+    expect(savedSessionExists).toBe(true);
+  });
+
+  it("the sign-in uses the app manifest and one-hour expiry", async () => {
     await open();
     const catalogManifest = sdkCore.validateManifest(manifestJson());
     const { options } = calls[0]!;
@@ -304,7 +479,9 @@ describe("opening an installed app: one sign-in per open", () => {
     expect(options["allowedActions"]).toEqual(openScope(catalogManifest, sdkCore).allowedActions);
     expect(options["allowedPathPrefixes"]).toEqual(openScope(catalogManifest, sdkCore).allowedPathPrefixes);
     expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
-    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(options["hostSpaces"]).toBeUndefined();
+    expect(options["autoCreateSpace"]).toBe(true);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
   });
   it("lets the approvals of the sign-in itself through, one at a time", async () => {

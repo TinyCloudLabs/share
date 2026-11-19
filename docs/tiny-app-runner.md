@@ -3,16 +3,16 @@
 An app opened from [`/apps/`](apps-catalog.md) is saved in the person's own TinyCloud: its pinned
 files under `<app_id>/app/` (`app.jsx` is its code, `manifest.json` says what it may use), its
 `<app_id>/app/install.json` (`{source, digest, installed_at}`), and any notes under `<app_id>/knowledge/`. The runner opens it: it reads
-those files, signs in once for the catalog's grants plus the app's own folders (saving and reading its files), and runs `app.jsx` in the
+those files, restores or obtains the app's own grant, reads the saved version, and runs `app.jsx` in the
 [JSX sandbox](jsx-artifact-sharing.md), where it reaches the person's data only through a small
 message bridge.
 
-The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open starts when the page loads, with no click. Before the OpenKey window opens, the page loads the SDK and fetches only this origin's static files; it reads and writes nothing in TinyCloud until the one approval.
+The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open starts when the page loads, with no click. Before OpenKey appears, the page loads the SDK and fetches only this origin's static files. No TinyCloud read or write occurs until the app's own session is restored or approved.
 
 ## What a person sees
 
 1. **Disclosure, inline**: the app's name and description, what it can read and change (from the catalog's own manifest), and a provenance line that stays on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust." It is shown as the open starts, before OpenKey. There is no separate Continue step.
-2. **One OpenKey approval**, named in the status line: "Approve in the OpenKey window so Share can open `<app>` from your TinyCloud". It covers reading the app's saved copy, saving any files that are missing, and starting the app with the permissions listed on the page. OpenKey connects once.
+2. **First-open approval**: a new install asks once for the app's saved files and current-version grants. If the account already has its `applications` space, this is the only approval. If that space is missing, OpenKey then shows its normal "Create a new TinyCloud space" approval for `applications`; the app opens afterward. A routine reopen restores the app's saved session with no OpenKey request. A new approval is needed only for permissions the selected version adds beyond the saved grant.
 3. **The app**, in its frame, under the page's own bar: the app name, "Open another app",
    "Sign out of this app", a status line (a live region), "What this app can do" and "What a
    sandboxed page can still reveal" (the same words as the viewer's notice). The bar is in the
@@ -24,7 +24,9 @@ The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open
    answer in time, another request waiting, wrong account).
 
 The session lasts one hour. At its end the frame is removed and the page says so. "Sign out of
-this app" ends it earlier. Nothing is stored in the browser, and no delegation outlives the tab.
+this app" ends it earlier. The app-scoped session and any signed runtime grants for the selected
+app version are stored in browser storage; the SDK validates them on restore. App files and notes
+remain in TinyCloud.
 
 ### Why not the share viewer's notice
 
@@ -38,26 +40,28 @@ cannot be dismissed, and keeps the sandbox's privacy limits one click away in th
 The saved manifest is the person's to edit (their agent may rewrite it). It decides what the bridge
 lets the app call, but never more than the catalog's manifest for the version they installed:
 
-0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before anything else: a disabled entry opens nothing.
-1. Find the catalog entry whose `app_id` and `bundle.digest` equal the install record's. The install record is read only after the one approval, so this step runs after it. None: "This version of the app isn't in the catalog any more"; the open stops there. Otherwise fetch that entry's manifest from `/apps/b/<digest>/` and check it against the catalog's sha256 (as the install does).
-2. Sign in once for the open's union (`openManifest`, src/apps/grants.ts): the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/` (see [apps-catalog.md](apps-catalog.md)). One hour, `persistSession: false`. The session is signed under the app's own `app_id`, so the SDK's registry sync lists the app once the person approves, even if the open is refused later. The same session reads the saved copy and saves missing files. The read is bounded (64 files, 8 MB). The node's metadata does not give a file's size and `kv.get` buffers the whole value, so each file is fetched as a stream from a short-lived signed read URL (a `get`) and the read stops, cancelling the stream, at the first byte past the cap: a 1 GB `app/x` is refused after a few chunks, not downloaded. A listing that does not fit counts as a mismatch.
-3. **The pin**: hash every code file under `app/` (everything the catalog lists for the installed digest, except `knowledge/` and `manifest.json`; `install.json` is the install record) and compare with the catalog's sha256. A differing, missing or extra file is refused with the "This app's code doesn't match the pinned version" screen, which offers Repair. `knowledge/` stays the person's and is never hashed. `manifest.json` is not pinned: it is the person's to narrow, and step 4 decides what it may ask for.
-4. Re-validate the saved manifest with the SDK's `validateManifest`, then compare the SDK's own composed ReCap resources of both (`composeManifestRequest`, with the account registry grants the sign-in always adds). Every `(service, space, action, path)` of the saved manifest must be covered by one of the catalog's: same service and space, the action in the covering grant's actions, and the path equal, under a covering "/"-ending prefix, or covered by an empty path. Narrowing (fewer actions, longer paths, fewer grants) passes; anything wider is "This app asks for more than it did when you installed it" and stops after one approval. The first difference is shown.
-5. Also refused: a delegation target (`did`), `secrets`, a space other than `applications`, a service other than key-value and SQL, a custom folder prefix, a path with `..` or an empty segment. `includePublicSpace` is forced off and `expiry` to `1h` (set by `openManifest`).
+0. If there is no saved app session, check the current catalog entry's availability before signing in. With a saved session, defer the kill-switch check until the install record identifies the installed version.
+1. A fresh install asks for the current version's app grant. A reopen restores the app's own persisted session with a narrow `get` on `<app_id>/app/install.json`; that same session reads the saved copy and resolves the catalog entry by `app_id` and `bundle.digest`. An unlisted digest stops with "This version of the app isn't in the catalog any more". Check the selected entry's kill switch before using it.
+2. Load and verify the selected version's manifest from `/apps/b/<digest>/`. On a fresh install, the app approval covers that version's runtime grants, `get`, `list` and create-only `put` on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/` (see [apps-catalog.md](apps-catalog.md)). If the primary `applications` space is missing, the SDK follows the production flow and asks separately to create that space; it does not retry the app approval. On reopen, restore the app-scoped session and request the selected version's grants on that same client; resources already covered by the signed grant or an existing runtime delegation do not prompt. Only an uncovered permission asks for approval. The runner's Trusted-Types-safe dialog lists only those additional permissions before the SDK creates a runtime grant. The same session saves missing files and runs the app. Sessions are app-scoped and persisted for one hour. The saved-copy read is bounded (64 files, 8 MB). The node's metadata does not give a file's size and `kv.get` buffers the whole value, so each file is fetched as a stream from a short-lived signed read URL and the read stops at the cap.
+
+With no saved app session, the initial grant follows the current published version because the saved install record is not available until sign-in. The saved digest still selects the code and bridge permissions; an older bundle runs unchanged even if the current grant includes a newer permission.
+
+3. **The pin**: hash every code file under `app/` (everything the catalog lists for the installed digest, except `knowledge/` and `manifest.json`; `install.json` is the install record) and compare with the catalog's sha256. A differing, missing or extra file is refused with the "This app's code doesn't match the pinned version" screen, which offers Repair. `knowledge/` stays the person's and is never hashed. `manifest.json` is not pinned: it is the person's to narrow, and the next step decides what it may ask for.
+4. Re-validate the saved manifest with the SDK's `validateManifest`, then compare the SDK's own composed ReCap resources of both (`composeManifestRequest`). Every `(service, space, action, path)` of the saved manifest must be covered by one of the catalog's: same service and space, the action in the covering grant's actions, and the path equal, under a covering "/"-ending prefix, or covered by an empty path. Narrowing (fewer actions, longer paths, fewer grants) passes; anything wider is "This app asks for more than it did when you installed it". The first difference is shown.
+5. Also refused: a delegation target (`did`), `secrets`, a space other than `applications`, a service other than key-value and SQL, a custom folder prefix, a path with `..` or an empty segment. `includePublicSpace` is forced off and `expiry` to `1h`.
 6. The bridge's allow-list is `makeAuthorizer` on the capped copy (`capGrants(saved, catalog).signing`). The frame's calls are checked against that list, not against the session.
 
 ### No signer escalation
 
-A wallet-mode client signs for more than its session covers when asked. The runner's web client has
-OpenKey as its signer, so once the runtime sign-in finishes every signature request is refused
-(`runner-signing-closed`, in the approval guard both the provider and the SDK's sign callback go
-through), and the services the bridge uses invoke with the session key only. So a call outside the session's ReCap goes to the node and is refused there. The session is the open's union, so the node accepts writes under `<app_id>/app/` and `<app_id>/knowledge/`. The bridge's allow-list refuses the `app/` writes, and lets `knowledge/` writes through only as the saved manifest grants them. The page, not the node, keeps saving rights away from the app frame. `test/e2e-prod/runner-gate.mjs` (stage 6) runs the real data adapter and bridge with the page's manifest check skipped, over a signer-less node-sdk client restored from the union session, against a real node. It asserts the node refuses each call the union does not cover and accepts the `app/` write.
-
-Residual: the sign-in helper hard-codes `includeAccountRegistryPermissions: true`
-(`src/share/openkey-session.ts`), so the session also carries `account`-space registry permissions (kv
-`applications/`, `spaces/`, `system/bootstrap/complete`, the account index database). The runner
-cannot opt out without changing the helper, so it does not. The bridge cannot name the `account`
-space, but if the runner page's checks failed, the node would not refuse a call in those prefixes.
+With a saved session, the app client asks only for permissions resolved for the selected installed version, and only if the session does not already cover them. Without a saved session, the initial grant follows the current published version; the saved install record is read afterward, and the bridge remains capped to the selected version.
+After the same-session permission check completes, the runner closes further signature
+requests (`runner-signing-closed`, in the approval guard); bridge services invoke with the
+session key only. A call outside the session's ReCap is refused by the node. The bridge
+allow-list separately refuses the app frame's `app/` writes and allows `knowledge/` writes
+only as the saved manifest grants them. The page, not the node, keeps installation writes
+away from the app frame. `test/e2e-prod/runner-gate.mjs` (stage 6) runs the real data
+adapter and bridge with the page's manifest check skipped, over a signer-less node-sdk
+client restored from the app grant, against a real node.
 
 ### Repair
 
@@ -210,7 +214,7 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
 
 ## Known limits
 
-- Opening needs one approval for the union session, sized to the catalog manifest. The saved copy's manifest cannot size the session before sign-in, so the bridge allow-list is narrowed to the stored manifest instead. A persisted per-app session is a later slice.
+- A fresh install asks once for its version's grant. A routine reopen reads `install.json` through the app's persisted session and asks only for permissions not already covered; it makes no OpenKey request when the installed version's grant is covered.
 - An installed version that has left the catalog cannot be opened or repaired (its code can't be checked); the page shows what to delete.
 - An app can still reveal that you opened it (your IP address and the time), and by trying to open another page (`location`, a followed
   link) it can make your browser look up and connect to an address it picks, which can carry a little data. Measured: no HTTP request is

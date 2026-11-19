@@ -13,8 +13,8 @@
  * and whatever else the app ships. Its files are copied to
  * `public/apps/b/<digest>/`, where `<digest>` is the bundle digest defined in
  * scripts/apps-catalog.mjs. `--publisher` is required for a new app and kept
- * for an existing one. Updating an app replaces its entry and removes the
- * bundle folder it supersedes.
+ * for an existing one. Updating adds the new bundle first and retains earlier
+ * entries and folders so saved installations still resolve their pinned version.
  *
  * Test hooks: `--catalog <file>` and `--public <dir>` redirect the outputs.
  *
@@ -177,7 +177,8 @@ try {
 
   const catalog = existsSync(values.catalog) ? JSON.parse(readFileSync(values.catalog, "utf8")) : { schema: CATALOG_SCHEMA, apps: [] };
   if (catalog.schema !== CATALOG_SCHEMA) die(`${values.catalog} is not a ${CATALOG_SCHEMA} catalog`);
-  const previous = catalog.apps.find((app) => app.app_id === manifest.app_id);
+  const versions = catalog.apps.filter((app) => app.app_id === manifest.app_id);
+  const previous = versions[0];
   const publisher = values.publisher === undefined ? previous?.publisher : { name: values.publisher, ...(values["publisher-did"] === undefined ? {} : { did: values["publisher-did"] }) };
   if (publisher === undefined) die("--publisher <name> is required for a new app");
 
@@ -206,14 +207,17 @@ try {
     cpSync(staged, destination, { recursive: true });
   }
 
-  const apps = catalog.apps.filter((app) => app.app_id !== entry.app_id).concat(entry).sort((a, b) => (a.app_id < b.app_id ? -1 : a.app_id > b.app_id ? 1 : 0));
+  // Newest version first: new opens use it, while stored installs still resolve their exact digest.
+  const apps = catalog.apps
+    .filter((app) => app.app_id !== entry.app_id || app.bundle?.digest !== entry.bundle.digest)
+    .concat(entry)
+    .sort((a, b) => {
+      if (a.app_id !== b.app_id) return a.app_id < b.app_id ? -1 : 1;
+      if (a.bundle.digest === entry.bundle.digest) return -1;
+      if (b.bundle.digest === entry.bundle.digest) return 1;
+      return 0;
+    });
   writeFileSync(values.catalog, `${JSON.stringify({ schema: CATALOG_SCHEMA, apps }, null, 2)}\n`);
-
-  // Drop the folder this update superseded, unless another entry still pins it.
-  const superseded = previous?.bundle?.digest;
-  if (typeof superseded === "string" && /^[0-9a-f]{64}$/.test(superseded) && superseded !== described.bundle.digest && !apps.some((app) => app.bundle.digest === superseded)) {
-    rmSync(join(bundles, superseded), { recursive: true, force: true });
-  }
 
   const problems = verifyCatalog(JSON.parse(readFileSync(values.catalog, "utf8")), values.public);
   if (problems.length > 0) die(`catalog failed verification after the update:\n  ${problems.join("\n  ")}`);

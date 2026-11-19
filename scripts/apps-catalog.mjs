@@ -182,15 +182,22 @@ export function verifyCatalog(catalog, publicDir) {
   if (catalog.schema !== CATALOG_SCHEMA) errors.push(`schema must be ${CATALOG_SCHEMA}`);
   if (!Array.isArray(catalog.apps)) return [...errors, "apps must be an array"];
 
-  const seenIds = new Set();
+  const versionsById = new Map();
+  const closedIds = new Set();
+  let groupId;
   const referenced = new Set();
   for (const [index, entry] of catalog.apps.entries()) {
     const label = isObject(entry) && isText(entry.app_id) ? entry.app_id : `apps[${index}]`;
     const fail = (message) => errors.push(`${label}: ${message}`);
     if (!isObject(entry)) { fail("must be an object"); continue; }
     if (!isText(entry.app_id)) fail("app_id is required");
-    else if (seenIds.has(entry.app_id)) fail("duplicate app_id");
-    else seenIds.add(entry.app_id);
+    else {
+      if (groupId !== entry.app_id) {
+        if (closedIds.has(entry.app_id)) fail("versions for an app_id must be adjacent");
+        if (groupId !== undefined) closedIds.add(groupId);
+        groupId = entry.app_id;
+      }
+    }
     if (isText(entry.app_id) && installAppIdProblem(entry.app_id) !== null) fail(`app_id ${installAppIdProblem(entry.app_id)}`);
     // The kill switch lives in the entry, not in the bundle: flipping it changes no digest.
     if (entry.disabled !== undefined && entry.disabled !== true) fail("disabled must be true when present");
@@ -211,6 +218,12 @@ export function verifyCatalog(catalog, publicDir) {
     const bundle = entry.bundle;
     if (!isObject(bundle) || !Array.isArray(bundle.files) || typeof bundle.digest !== "string") { fail("bundle {root, files, digest} is required"); continue; }
     if (!HEX64.test(bundle.digest)) { fail("bundle.digest must be 64 lowercase hex characters"); continue; }
+    if (isText(entry.app_id)) {
+      let digests = versionsById.get(entry.app_id);
+      if (digests === undefined) { digests = new Set(); versionsById.set(entry.app_id, digests); }
+      if (digests.has(bundle.digest)) fail("duplicate app_id and bundle.digest");
+      else digests.add(bundle.digest);
+    }
     referenced.add(bundle.digest);
     if (bundle.root !== bundleRootFor(bundle.digest)) fail(`bundle.root must be ${bundleRootFor(bundle.digest)}`);
 

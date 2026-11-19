@@ -1,3 +1,4 @@
+import type { Mock } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Manifest } from "@tinycloud/sdk-core";
@@ -18,7 +19,15 @@ const appFiles = entry.bundle.files.filter((file) => !file.path.startsWith("know
 
 interface SignInCall { options: Record<string, unknown>; guard: (wait: () => Promise<unknown>) => Promise<unknown>; fake: FakeSignIn }
 interface FakeSignIn {
-  tinycloud: { kvForSpace: () => unknown; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn> };
+  tinycloud: {
+    kvForSpace: () => unknown;
+    space: (name: string) => { id: string; kv: unknown };
+    sqlForSpace: () => unknown;
+    signOut: ReturnType<typeof vi.fn>;
+    hasPermissions: Mock;
+    requestPermissions: Mock;
+    address: Mock;
+  };
   session: { address: string; openkey: object };
   spaces: Record<string, string>;
   sessionExpiresAt: number;
@@ -41,20 +50,35 @@ vi.mock("../src/email-share/config.js", () => ({ loadSharePublicConfig: async ()
 vi.mock("../src/share/openkey-session.js", () => ({
   takeWalletApprovalFailure: () => undefined,
   signInWithManifest: async (options: Record<string, unknown>) => {
+    type Permission = { service: string; space: string; path: string; actions: string[] };
+    const grants: Permission[] = sdkCore.resolveManifest(options["manifest"] as Manifest).resources.map((grant) => ({ ...grant, actions: [...grant.actions] }));
+    const kv = {
+      list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
+      put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
+        puts.push(key);
+        if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
+        kvFiles.set(key, value);
+        return { ok: true };
+      },
+      createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
+    };
     const fake: FakeSignIn = {
       tinycloud: {
-        kvForSpace: () => ({
-          list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
-          put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
-            puts.push(key);
-            if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
-            kvFiles.set(key, value);
-            return { ok: true };
-          },
-          createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
-        }),
+        kvForSpace: () => kv,
+        space: (name) => ({ id: name, kv }),
         sqlForSpace: () => ({ db: () => ({}) }),
         signOut: vi.fn(async () => undefined),
+        address: vi.fn(() => "0x0"),
+        hasPermissions: vi.fn((permissions: Permission[]) => permissions.every((requested) =>
+          requested.actions.every((action) => grants.some((grant) =>
+            grant.service === requested.service && grant.space === requested.space && grant.actions.includes(action) &&
+            (grant.path === requested.path || (grant.path.endsWith("/") && requested.path.startsWith(grant.path))),
+          )),
+        )),
+        requestPermissions: vi.fn(async (permissions: Permission[]) => {
+          grants.push(...permissions);
+          return { approved: true, delegations: [] };
+        }),
       },
       session: { address: "0x0", openkey: {} },
       spaces,

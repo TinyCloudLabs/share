@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { classifySql } from "../src/apps/sql-class.ts";
+import { catalog } from "../src/apps/catalog.ts";
 
 describe("classifySql: one statement, one class", () => {
   it.each([
@@ -110,7 +111,9 @@ describe("classifySql: one statement, one class", () => {
 
   it("classifies the real schema files of the catalog's samples statement by statement as schema, never read or write", () => {
     // The apps run each CREATE as its own execute call: every one of them is a "schema" statement.
-    const schema = readFileSync("public/apps/b/dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014/schema.sql", "utf8");
+    const health = catalog.apps.find((entry) => entry.app_id === "xyz.tinycloud.sample.healthlog");
+    if (health === undefined) throw new Error("Health Log is missing from the catalog");
+    const schema = readFileSync(`public${health.bundle.root}schema.sql`, "utf8");
     const withoutComments = schema.replace(/--[^\n]*/g, "");
     const statements = withoutComments.split(/;\s*(?:\n|$)/).map((part) => part.trim()).filter((part) => part !== "" && !/\bTRIGGER\b/i.test(part));
     expect(statements.length).toBeGreaterThan(3);

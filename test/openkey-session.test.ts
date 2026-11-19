@@ -28,7 +28,7 @@ import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flig
 
 const state = vi.hoisted(() => ({
   config: undefined as Record<string, unknown> | undefined,
-  clients: [] as Array<{ config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number }>,
+  clients: [] as Array<{ config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number; restored: boolean }>,
   // OpenKey instances made, their app names, how many times each flow was closed, and whether connect fails.
   openKeys: [] as Array<{ appName: unknown; disconnects: number; signOuts?: number }>,
   connectError: undefined as unknown,
@@ -49,6 +49,9 @@ const state = vi.hoisted(() => ({
   omitSignature: false,
   sender: "",
   providerSignature: "",
+  persisted: false,
+  simulateSignInApproval: false,
+  openKeyRequests: 0,
 }));
 
 const SENDER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -64,7 +67,7 @@ vi.mock("@openkey/sdk", () => ({
     constructor(config?: { appName?: unknown }) { this.record = { appName: config?.appName, disconnects: 0 }; state.openKeys.push(this.record); }
     disconnect() { this.record.disconnects += 1; }
     async signOut() { this.record.signOuts = (this.record.signOuts ?? 0) + 1; return { requestId: "r", revoked: true }; }
-    async connect() { state.onConnect?.(); if (state.connectError !== undefined) throw state.connectError; return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
+    async connect() { state.openKeyRequests += 1; state.onConnect?.(); if (state.connectError !== undefined) throw state.connectError; return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
     getSessionToken() { return null; }
     tinycloudSigningOptions() { return { endpoint: "https://api.openkey.so/api/delegate/sign", token: null }; }
     async signMessage(request: { message: string; keyId?: string }) {
@@ -79,12 +82,12 @@ vi.mock("@openkey/sdk", () => ({
 
 vi.mock("@tinycloud/web-sdk", () => ({
   TinyCloudWeb: class {
-    private readonly record: { config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number };
+    private readonly record: { config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number; restored: boolean };
     get pendingAccountRegistrySync() { return state.registrySync; }
     constructor(config: Record<string, unknown>) {
       if (state.constructorError !== undefined) throw state.constructorError;
       state.config = config;
-      this.record = { config, hosted: [], order: [], signedOut: 0 };
+      this.record = { config, hosted: [], order: [], signedOut: 0, restored: false };
       state.clients.push(this.record);
     }
     space() { return { kv: {} }; }
@@ -96,15 +99,26 @@ vi.mock("@tinycloud/web-sdk", () => ({
       if (state.saved === "unreachable") return { ok: false, error: { code: "NETWORK_ERROR", message: "Failed to fetch" } };
       return { ok: true, data: {} };
     } } };
+    async restoreSession(): Promise<{ status: string; session?: { address: string; siwe: string | undefined } }> {
+      this.record.order.push("restoreSession");
+      this.record.restored = state.persisted;
+      return state.persisted ? { status: "restored", session: { address: state.sender, siwe: state.signInSiwe } } : { status: "missing" };
+    }
+    connectWallet() { this.record.order.push("connectWallet"); }
     async signIn(): Promise<{ address: string; siwe: string | undefined }> {
       this.record.order.push("signIn");
       if (state.signInError !== undefined) throw state.signInError;
       // Only the first sign-in finds the saved session: a sign-out clears it.
       this.restoreStatus = state.saved !== undefined && this.record.signedOut === 0 ? "restored" : "logging-in";
       if (this.restoreStatus === "restored" && state.saved === "unusable") throw new Error("Manifest validation failed");
+      if (!this.record.restored && state.simulateSignInApproval) {
+        const strategy = this.record.config.signStrategy as CallbackStrategy;
+        await strategy.handler({ address: state.sender, chainId: 1, message: "siwe:sign-in", type: "siwe", purpose: "sign-in" });
+        state.persisted = this.record.config.persistSession === true;
+      }
       return { address: state.sender, siwe: state.signInSiwe };
     }
-    async signOut(): Promise<void> { this.record.signedOut += 1; this.record.order.push("signOut"); this.restoreStatus = "idle"; }
+    async signOut(): Promise<void> { this.record.signedOut += 1; state.persisted = false; this.record.order.push("signOut"); this.restoreStatus = "idle"; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
   },
 }));
@@ -176,6 +190,9 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.signed = [];
     state.signer = SENDER;
     state.omitSignature = false;
+    state.persisted = false;
+    state.openKeyRequests = 0;
+    state.simulateSignInApproval = false;
     state.saved = undefined;
     localStorage.clear();
     sessionStorage.clear();
@@ -206,7 +223,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(manifestOf(1).permissions!.map((entry) => entry.service)).toEqual(["tinycloud.kv"]);
     expect(manifestOf(2)).toEqual(APP_MANIFEST);
     expect(new Set([library.tinycloud, save.tinycloud, app.tinycloud]).size).toBe(3);
-    for (const signedIn of [library, save, app]) expect(signedIn.session.address).toBe(SENDER.address);
+    for (const signedIn of [library, save, app]) expect(signedIn.session?.address).toBe(SENDER.address);
     for (const client of state.clients) {
       expect(client.config.includeAccountRegistryPermissions).toBe(true);
       expect(client.config.autoCreateSpace).toBe(true);
@@ -290,6 +307,30 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a" });
     expect(signedIn.sessionExpiresAt).toBe(expiring.getTime());
   });
+  it("restores a covered app session before OpenKey and opens one approval only on the fresh install", async () => {
+    state.simulateSignInApproval = true;
+    const options = {
+      manifest: APP_MANIFEST,
+      config: CONFIG,
+      persistSession: true,
+      includeAccountRegistryPermissions: false,
+      autoCreateSpace: false,
+      sessionPrefix: "tinycloud-share-runner-test",
+      restoreBeforeOpenKey: true,
+    };
+    const first = await signInWithManifest(options);
+    expect(state.openKeyRequests).toBe(1);
+    expect(state.signed).toHaveLength(1);
+    expect(state.clients[0]!.order).toEqual(["restoreSession", "connectWallet", "signIn"]);
+    await first.detach();
+
+    const reopened = await signInWithManifest(options);
+    expect(state.openKeyRequests).toBe(1);
+    expect(state.signed).toHaveLength(1);
+    expect(state.clients[1]!.order).toEqual(["restoreSession", "signIn"]);
+    await reopened.detach();
+  });
+
 
   it("reports a full session when the sign-in's SIWE carries no expiry", async () => {
     state.signInSiwe = "share.example wants you to sign in";
@@ -393,7 +434,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     it("clears a saved session the SDK restores but cannot use, and signs in afresh", async () => {
       state.saved = "unusable";
       const signedIn = await library();
-      expect(signedIn.session.address).toBe(SENDER.address);
+      expect(signedIn.session!.address).toBe(SENDER.address);
       expect(state.clients[0]!.order).toEqual(["signIn", "signOut", "signIn", "host:account"]);
     });
 

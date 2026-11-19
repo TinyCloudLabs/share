@@ -96,13 +96,15 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
     });
     const kv = signedIn.tinycloud.space(COURIER_SPACE).kv;
     const connected = signedIn;
+    const session = connected.session;
+    if (session === undefined) throw new Error("courier-openkey-session-missing");
     return {
-      address: connected.session.address,
+      address: session.address,
       store: createKvStore(kv),
       dispose: connected.dispose,
       // Courier always connects OpenKey in this tab (it keeps nothing, so it never resumes without it), so OpenKey holds
       // a sign-in here; said directly rather than marked in storage, which Courier keeps empty.
-      signOut: () => endSenderSession({ session: connected.session, tinycloud: connected.tinycloud }, { connectedHere: true }),
+      signOut: () => endSenderSession({ session: connected.session!, tinycloud: connected.tinycloud }, { connectedHere: true }),
     };
   } catch (error) {
     await signedIn?.dispose();
