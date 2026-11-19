@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLIENT_IP, addressHeader, clientAddressFor, get, makeIssuer, signedCreate, signedDelete, take } from "./support/client.ts";
+import { CLIENT_IP, clientAddressFor, get, makeIssuer, signedCreate, signedDelete, take } from "./support/client.ts";
 
 const HEADER = "CF-Connecting-IP";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0);
