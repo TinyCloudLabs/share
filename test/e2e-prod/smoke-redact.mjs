@@ -4,6 +4,9 @@
 /** The OpenKey approval's primary action: its labels while ready, and while signing. */
 export const APPROVE_NAME = /^(Approve( exact bytes)?|Signing…)$/;
 
+/** The whole-request action of OpenKey's extra warning for elevated permissions (TC-2927). Never part of APPROVE_NAME. */
+export const ELEVATED_ALLOW_NAME = /^Allow and approve$/;
+
 // Origins whose URL paths are kept (with queries and fragments removed); any other origin keeps only its host.
 const APP_HOSTS = new Set(["share.tinycloud.xyz", "openkey.so", "api.openkey.so", "node.tinycloud.xyz", "tee.node.tinycloud.xyz", "registry.tinycloud.xyz"]);
 
