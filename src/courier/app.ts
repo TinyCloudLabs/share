@@ -18,11 +18,16 @@ import { loadOverview, type Overview } from "./service.js";
 import { signInFailureMessage, type CourierSession, type SignInProgress } from "./session.js";
 import type { SignOutOutcome } from "../share/sender-chrome.js";
 import { StoreError } from "./store.js";
+import type { EmbeddedCourier } from "./embedded.js";
 
 export interface CourierDeps {
   signIn(progress: SignInProgress): Promise<CourierSession>;
   renderBody(host: HTMLElement, markdown: string, label: string): void;
   now?(): number;
+  /** Present only inside One's frame: access comes from One's grant, the view is read-only, and sign-in and writes open this page in a new tab. */
+  embedded?: EmbeddedCourier;
+  /** How long the frame waits for One's grant before showing the signed-out state. */
+  embeddedWaitMs?: number;
 }
 
 type Screen = "threads" | "needs" | "orders";
@@ -59,6 +64,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
   const announcer = createAnnouncer(doc, "cr-announcer");
   let session: CourierSession | undefined;
   let teardown: (() => void) | undefined;
+  let reloadSession: (() => void) | undefined;
 
   const showSignedOut = (notice?: string): void => {
     teardown?.(); teardown = undefined;
@@ -83,6 +89,8 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
     let hint: ReturnType<typeof showApprovalHint> | undefined;
     button.addEventListener("click", () => {
       if (button.disabled) return;
+      // Inside One's frame there is no OpenKey: the same page opens on its own in a new tab.
+      if (deps.embedded !== undefined) { deps.embedded.openStandalone(); return; }
       button.disabled = true; button.setAttribute("aria-busy", "true");
       line.textContent = "Opening OpenKey…";
       const progress: SignInProgress = {
@@ -122,9 +130,10 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
 
     const bar = el(doc, "nav", "sender-chrome tc-toolbar"); bar.setAttribute("aria-label", "Account");
     const account = el(doc, "span", "sender-account tc-badge tc-badge--mono", signedIn.address.length > 12 ? `${signedIn.address.slice(0, 6)}…${signedIn.address.slice(-4)}` : signedIn.address);
-    account.title = "Signed in with OpenKey";
+    if (deps.embedded === undefined) account.title = "Signed in with OpenKey";
     const signOut = el(doc, "button", "button button-secondary tc-button tc-button--compact sender-signout", "Sign out"); signOut.type = "button";
-    bar.append(account, signOut);
+    // One owns the session inside its frame; there is nothing to sign out of here.
+    bar.append(account, ...(deps.embedded === undefined ? [signOut] : []));
     const main = el(doc, "main", "sender-shell cr-shell");
     const tabs = el(doc, "div", "cr-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Courier");
     const panel = el(doc, "div", "cr-panel"); panel.setAttribute("role", "tabpanel");
@@ -137,6 +146,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
       refresh: () => load(),
       openThread: (ref) => { screen = "threads"; thread = ref; paint(); },
       showNeedsYou: () => { screen = "needs"; thread = undefined; paint(); },
+      ...(deps.embedded === undefined ? {} : { embedded: { openStandalone: () => { deps.embedded?.openStandalone(); } } }),
     };
 
     const tabButtons = new Map<Screen, HTMLButtonElement>();
@@ -190,6 +200,13 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
         overview = await loadOverview(signedIn.store, now());
         loadError = undefined;
       } catch (error) {
+        // A refused read inside One's frame asks One once for the courier scope; the answer repaints, or ends the session.
+        if (deps.embedded !== undefined && error instanceof StoreError && error.code === "denied") {
+          overview = undefined; loadError = undefined; loading = false;
+          deps.embedded.accessRefused();
+          if (!closed) paint();
+          return;
+        }
         loadError = loadFailure(error);
         overview = undefined;
       } finally {
@@ -228,10 +245,21 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
       });
     });
 
+    reloadSession = () => { void load(); };
     paint();
     await load();
   };
 
-  showSignedOut();
-  doc.defaultView?.addEventListener("pagehide", () => { void session?.dispose(); });
+  const embedded = deps.embedded;
+  if (embedded === undefined) showSignedOut();
+  else {
+    // Until One answers the page keeps its loading state; if nothing comes (One shows no grant when it would have to ask) it shows the signed-out state.
+    const waiting = setTimeout(() => { if (session === undefined) showSignedOut(); }, deps.embeddedWaitMs ?? 10_000);
+    embedded.start({
+      onSession: (granted) => { clearTimeout(waiting); session = granted; void showSignedIn(granted); },
+      onRegranted: () => { reloadSession?.(); },
+      onEnded: () => { clearTimeout(waiting); session = undefined; reloadSession = undefined; showSignedOut(); },
+    });
+  }
+  doc.defaultView?.addEventListener("pagehide", () => { void session?.dispose(); embedded?.stop(); });
 }

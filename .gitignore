@@ -12,3 +12,6 @@ dist
 !.env.example
 !.env.*.example
 dist-usercontent
+
+# mkcert files for `npm run dev:one` (https on localhost).
+.one-dev/

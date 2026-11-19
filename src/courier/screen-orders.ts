@@ -97,7 +97,9 @@ export function renderOrders(ctx: ViewContext, overview: Overview): HTMLElement 
 
   select.addEventListener("change", () => { void load(); });
   reload.addEventListener("click", () => { void load(); });
-  save.addEventListener("click", () => { void write(); });
+  // Inside One's frame nothing is written: the text is read-only and Save opens this page in its own tab.
+  if (ctx.embedded !== undefined) text.readOnly = true;
+  save.addEventListener("click", () => { if (ctx.embedded !== undefined) ctx.embedded.openStandalone(); else void write(); });
   void load();
   return section;
 }

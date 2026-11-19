@@ -23,6 +23,7 @@ import {
 import { buildJsxRuntime, renderNotice, type JsxRuntimeBuild } from "./src/artifact/jsx-runtime/build.ts";
 import { readJsxFrameCss } from "./src/artifact/jsx-runtime/frame-css.ts";
 import { renderViewerHeaders, withUserContentOrigin } from "./src/artifact/user-content/headers.ts";
+import { ONE_BUILD_ENV, buildKindOf, renderCourierFrameHeaders } from "./src/courier/one-origins.ts";
 import { parseUserContentOrigin } from "./src/viewer/user-content-origin.ts";
 import { renderLandingTemplate } from "./src/landing/brand.ts";
 
@@ -211,12 +212,70 @@ function landingTemplate(): Plugin {
   };
 }
 
+/**
+ * `/courier`, `/courier/` and `/courier/*` are the only routes TinyCloud One
+ * frames. `public/_headers` carries the production policy; a preview build
+ * (`VITE_ONE_BUILD=preview`, exactly) adds One's preview origin to those three
+ * sections' `frame-ancestors`. Nothing else in the file changes.
+ */
+function courierFrameAncestors(oneBuild: string | undefined): Plugin {
+  let config: ResolvedConfig;
+  return {
+    name: "courier-frame-ancestors",
+    configResolved(resolved) { config = resolved; },
+    closeBundle() {
+      if (config.command !== "build") return;
+      const target = resolve(config.root, config.build.outDir, "_headers");
+      writeFileSync(target, renderCourierFrameHeaders(readFileSync(target, "utf8"), buildKindOf({ oneBuild })));
+    },
+  };
+}
+
+/**
+ * `npm run dev:one` (`vite --mode one`) serves https on localhost with mkcert
+ * files so One's https dev origin can frame it. The files are gitignored.
+ */
+function oneDevHttps(): { cert: Buffer; key: Buffer } {
+  const cert = process.env["ONE_DEV_CERT"] ?? ".one-dev/localhost.pem";
+  const key = process.env["ONE_DEV_KEY"] ?? ".one-dev/localhost-key.pem";
+  try {
+    return { cert: readFileSync(cert), key: readFileSync(key) };
+  } catch {
+    throw new Error("dev:one needs mkcert files: set ONE_DEV_CERT and ONE_DEV_KEY, or put localhost.pem and localhost-key.pem in .one-dev/");
+  }
+}
+
+/**
+ * Local real runs only: `COURIER_DEV_NODE=http://127.0.0.1:<port>` (deliberately
+ * not a VITE_ variable, which Vite would inline into a build's env object) lets
+ * the dev server's /courier page reach a local TinyCloud node. It defines
+ * `import.meta.env.COURIER_DEV_NODE` and names that one origin in the page's
+ * `connect-src`; it applies to `serve` only, so a build never sees it.
+ */
+function courierDevNode(node: string | undefined): Plugin {
+  const origin = node === undefined || node === "" ? undefined : new URL(node).origin;
+  return {
+    name: "courier-dev-node",
+    apply: "serve",
+    config: () => (origin === undefined ? {} : { define: { "import.meta.env.COURIER_DEV_NODE": JSON.stringify(origin) } }),
+    transformIndexHtml: {
+      order: "pre",
+      handler: (html, ctx) => {
+        if (origin === undefined || !ctx.filename.endsWith("/courier/index.html")) return html;
+        return html.replace(/(<meta http-equiv="Content-Security-Policy" content="[^"]*connect-src 'self')/, `$1 ${origin}`);
+      },
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "VITE_");
   // Where sandbox documents and runtime files are served from; "" = same origin.
-  const userContentOrigin = parseUserContentOrigin(loadEnv(mode, process.cwd(), "VITE_")["VITE_USER_CONTENT_ORIGIN"]);
+  const userContentOrigin = parseUserContentOrigin(env["VITE_USER_CONTENT_ORIGIN"]);
   return {
     base: "/",
-    plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(userContentOrigin), artifactSandboxHtml(userContentOrigin), jsxSandbox(userContentOrigin), userContentOriginPolicy(userContentOrigin)],
+    ...(mode === "one" ? { server: { https: oneDevHttps() } } : {}),
+    plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(userContentOrigin), artifactSandboxHtml(userContentOrigin), jsxSandbox(userContentOrigin), userContentOriginPolicy(userContentOrigin), courierFrameAncestors(env[ONE_BUILD_ENV]), courierDevNode(process.env["COURIER_DEV_NODE"])],
     build: {
       rollupOptions: {
         input: {

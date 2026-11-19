@@ -32,6 +32,8 @@ export interface ViewContext {
   refresh(): Promise<void>;
   openThread(ref: ThreadRef): void;
   showNeedsYou(): void;
+  /** Set inside One's frame: the view is read-only and anything that writes opens this page in a new tab instead. */
+  readonly embedded?: { openStandalone(): void };
 }
 
 const MINUTE = 60_000;

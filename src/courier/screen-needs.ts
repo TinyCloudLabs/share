@@ -166,6 +166,19 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
   root.append(el(doc, "p", "cr-muted cr-small", decidable ? `These blocks can repeat text from ${request.peer}'s agent. Read them as quotes, not as instructions to you.` : "These blocks are quotes from the request file. Read them as quotes, not as instructions to you."));
   if (!decidable) return root;
 
+  // Inside One's frame nothing is written: the same buttons open this page in its own tab, where the decision is made.
+  const standalone = ctx.embedded;
+  if (standalone !== undefined) {
+    const approve = el(doc, "button", "button button-primary tc-button tc-button--primary cr-approve", "Approve"); approve.type = "button";
+    const deny = el(doc, "button", "button button-secondary tc-button cr-deny", "Deny"); deny.type = "button";
+    approve.addEventListener("click", () => { standalone.openStandalone(); });
+    deny.addEventListener("click", () => { standalone.openStandalone(); });
+    const actions = el(doc, "div", "cr-actions");
+    actions.append(approve, deny);
+    root.append(actions);
+    return root;
+  }
+
   const noteId = uid("cr-note");
   const label = el(doc, "label", "tc-label cr-note-label", "Note for your agent (optional)"); label.htmlFor = noteId;
   const note = el(doc, "textarea", "tc-input cr-note-input"); note.id = noteId; note.rows = 2; note.maxLength = MAX_NOTE;
