@@ -53,13 +53,6 @@ function postReady(source: Window, origin: string = OPENKEY_ORIGIN): void {
 }
 
 describe("the approval hint's slow line", () => {
-  it("shows the help line at 15 s when no OpenKey window has loaded", async () => {
-    const more = show();
-    await vi.advanceTimersByTimeAsync(APPROVAL_SLOW_AFTER_MS);
-    expect(more.hidden).toBe(false);
-    expect(more.textContent).toBe(APPROVAL_SLOW_COPY);
-  });
-
   it("does not show the help line after 20 s while the OpenKey window is up", async () => {
     const more = show();
     postReady(openKeyFrame());

@@ -1,7 +1,7 @@
 // Clicking and counting OpenKey approvals in the sender sign-in smoke (TC-2310). The in-page
 // functions are self-contained (Puppeteer serializes them into the frame) and take the document or
 // element, so they can be unit tested.
-import { APPROVE_NAME, scrub } from "./smoke-redact.mjs";
+import { APPROVE_NAME, ELEVATED_ALLOW_NAME, scrub } from "./smoke-redact.mjs";
 
 /**
  * OpenKey's primary action: the last visible button of the last visible approval dialog (Cancel
@@ -49,7 +49,102 @@ export function boxMoved(before, after) {
   return Math.round(Math.max(Math.abs(after.x - before.x), Math.abs(after.y - before.y), Math.abs(after.height - before.height)));
 }
 
+/**
+ * OpenKey's extra warning for elevated permissions (TC-2927), which an Approve click opens in place
+ * of the review: `{ shown: false }` when it isn't showing; otherwise its title, one card heading per
+ * elevated permission (the heading's first span; the second is the "Sensitive" pill), and `allow`:
+ * its last button when that is the enabled whole-request action named `allowName`, else null. A
+ * request OpenKey can split ends in per-card choices and Continue instead; that is never clicked.
+ */
+export function elevatedScreen(allowName, doc = document) {
+  const visible = (element) => element.getClientRects().length > 0;
+  const label = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+  const screen = [...doc.querySelectorAll('[role=dialog][aria-labelledby="elevated-title"]')].filter(visible).at(-1);
+  if (screen === undefined) return { shown: false };
+  const title = screen.querySelector("#elevated-title");
+  const last = [...screen.querySelectorAll("button")].filter(visible).at(-1);
+  return {
+    shown: true,
+    title: title ? label(title) : "",
+    cards: [...screen.querySelectorAll("[role=group] h2")].map((heading) => label(heading.querySelector("span") ?? heading)),
+    allow: last !== undefined && !last.disabled && new RegExp(allowName).test(label(last)) ? last : null,
+  };
+}
+
+/** Whether the last visible dialog's last button reads "Signing…" (OpenKey took the approval). */
+export function signingShown(doc = document) {
+  const visible = (element) => element.getClientRects().length > 0;
+  const dialog = [...doc.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
+  const button = dialog ? [...dialog.querySelectorAll("button")].filter(visible).at(-1) : undefined;
+  return (button?.textContent ?? "").replace(/\s+/g, " ").trim() === "Signing…";
+}
+
+/**
+ * Why the smoke must not click "Allow and approve" on the warning `shown` (`{ title, cards, whole }`),
+ * or null. `expected` is what the step's own request makes OpenKey show: `{ site, cards, required }`;
+ * every shown card must be in `cards` and every card in `required` must be shown. Without
+ * `expected` the step's request must not reach the warning at all.
+ */
+export function elevatedRefusal(shown, expected) {
+  if (!expected) return "not expected at this step";
+  if (shown.title !== `${expected.site} is asking for more access`) return `unexpected title: ${shown.title}`;
+  const unexpected = shown.cards.filter((card) => !expected.cards.includes(card));
+  if (unexpected.length > 0) return `unexpected permission: ${unexpected.join("; ")}`;
+  const missing = expected.required.filter((card) => !shown.cards.includes(card));
+  if (missing.length > 0) return `missing permission: ${missing.join("; ")}`;
+  if (!shown.whole) return "no Allow and approve (a request OpenKey can split)";
+  return null;
+}
+
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/** The elevated warning in frame `sign` with its facts read out, or null when it isn't showing. The caller disposes `screen`. */
+async function readElevated(sign) {
+  const screen = await sign.evaluateHandle(elevatedScreen, ELEVATED_ALLOW_NAME.source).catch(() => null);
+  if (screen === null) return null;
+  const facts = await screen.evaluate((found) => ({ shown: found.shown, title: found.title, cards: found.cards, whole: Boolean(found.allow) })).catch(() => null);
+  if (facts?.shown) return { ...facts, screen };
+  await screen.dispose();
+  return null;
+}
+
+/**
+ * The warning is showing in `sign`: records it in `report.elevatedScreens` (step, title, card
+ * headings, whether its "Allow and approve" was taken) and clicks "Allow and approve" only when
+ * `elevatedRefusal` finds nothing; a refusal goes to `report.elevatedRefused`, nothing is clicked.
+ * Taken, as for Approve, once the review closes, a sign call starts after the click, or the review's
+ * Approve (which OpenKey presses itself after the warning) reads "Signing…"; otherwise a drop.
+ */
+async function allowElevated({ sign, during, report, closed, signedSince, at, stage, takenMs, elevated }, shown) {
+  try {
+    const entry = { during, stage: stage(), atMs: at(), title: scrub(shown.title).slice(0, 80), cards: shown.cards.map((card) => scrub(card).slice(0, 80)), wholeRequest: shown.whole, allowed: false };
+    report.elevatedScreens ??= [];
+    if (report.elevatedScreens.length < 10) report.elevatedScreens.push(entry);
+    const refused = elevatedRefusal(shown, elevated);
+    if (refused !== null) {
+      entry.refused = scrub(refused).slice(0, 200);
+      report.elevatedRefused ??= { during, stage: entry.stage, reason: entry.refused };
+      return false;
+    }
+    const button = (await shown.screen.getProperty("allow")).asElement();
+    if (!button) return false;
+    const clickedAt = at();
+    // DOM .click() is untrusted; OpenKey refuses it inside an iframe.
+    await button.click();
+    const taken = async () => closed() || signedSince(clickedAt) || await sign.evaluate(signingShown).catch(() => false);
+    const deadline = Date.now() + takenMs;
+    while (Date.now() < deadline) {
+      if (await taken()) { entry.allowed = true; return true; }
+      await pause(50);
+    }
+    if (await taken()) { entry.allowed = true; return true; }
+    report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
+    (report.approveClicksDropped ??= []).push({ during, stage: stage(), atMs: clickedAt, screen: "elevated" });
+    return false;
+  } finally {
+    await shown.screen.dispose();
+  }
+}
 
 /**
  * Clicks OpenKey's Approve in frame `sign` with real browser input and resolves whether the review
@@ -60,8 +155,15 @@ const pause = (ms) => new Promise((done) => setTimeout(done, ms));
  * `approveClicksDropped` entry: `during`, stage, timing, whether it was disabled without signing,
  * whether the button moved and what the click point hit) and the caller clicks again. A rejected
  * label goes to `approveLabelsRejected`. `at()` is the run clock; `stage()` the stage.
+ *
+ * When the click opens OpenKey's extra warning (TC-2927), or the warning is already showing, the
+ * result is that of its "Allow and approve" instead (`allowElevated`), clicked only when the warning
+ * shows what `elevated` expects for this step; Approve plus the warning count as one approval.
  */
-export async function clickApprove({ sign, during, report, closed, signedSince = () => false, at, stage, reviewSeenAt, takenMs = 5_000 }) {
+export async function clickApprove({ sign, during, report, closed, signedSince = () => false, at, stage, reviewSeenAt, takenMs = 5_000, elevated = null }) {
+  const context = { sign, during, report, closed, signedSince, at, stage, takenMs, elevated };
+  const open = await readElevated(sign);
+  if (open !== null) return allowElevated(context, open);
   const picked = await sign.evaluateHandle(approvePick, APPROVE_NAME.source);
   try {
     const rejected = await (await picked.getProperty("rejected")).jsonValue();
@@ -80,6 +182,8 @@ export async function clickApprove({ sign, during, report, closed, signedSince =
     let disabledWithoutSigning = false;
     while (Date.now() < deadline) {
       if (closed() || signedSince(clickedAt)) return true;
+      const opened = await readElevated(sign);
+      if (opened !== null) return allowElevated(context, opened);
       const state = await button.evaluate(clickState).catch(() => null);
       // Known limit: a reworded signing label plus a sign call slower than takenMs reads as a drop;
       // the retry finds no enabled Approve, so nothing is clicked twice, and the signature check holds.

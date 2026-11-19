@@ -196,7 +196,17 @@ click (when, how long after the review appeared, whether the button moved, and
 the tag and classes of what the click point hit). `signatures` counts OpenKey's
 completed sign calls per step (by the step the call started in); they must
 equal the counted approvals, or the step
-fails. `.github/workflows/sender-signin-smoke.yml` runs it on
+fails. Share's sign-in asks to decrypt on the owner's whole encryption
+network, so OpenKey's Approve opens its extra warning for elevated permissions
+(TC-2927). The smoke clicks that screen's "Allow and approve" only at sign-in,
+only for Share's own site, and only when every card on it is one Share's
+request explains (the whole-network card must be there); Approve plus the
+warning count as one approval. Each warning shown is listed in
+`elevatedScreens` (step, title, card headings, whether it was allowed). A
+warning at any other step, or one that doesn't match, is not clicked
+(`elevatedRefused`) and fails the run; so does a sign-in that never showed
+it.
+`.github/workflows/sender-signin-smoke.yml` runs it on
 pull requests (candidate), after each production deploy, and daily. OpenKey's
 release checks run the same script against production Share.
 
