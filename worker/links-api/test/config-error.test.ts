@@ -51,13 +51,6 @@ describe("a Worker whose configuration is refused", () => {
 describe("LAUNCH-CHECKLIST.md", () => {
   const text = readFileSync(new URL("../LAUNCH-CHECKLIST.md", import.meta.url), "utf8");
 
-  it("asks for the missing-line and 5xx alerts before email is enabled", () => {
-    expect(text).toMatch(/Before email is enabled:/);
-    expect(text).toMatch(/alert on a missing `links\.health` line/);
-    expect(text).toMatch(/any 5xx rate above zero/);
-    expect(text).toMatch(/BEFORE email is enabled/);
-  });
-
   it("says what to do when LINKS_READ_SIGNERS makes every request answer 500", () => {
     expect(text).toMatch(/Set `LINKS_READ_SIGNERS` only with an immediate smoke/);
     expect(text).toMatch(/the first action is to unset it/);

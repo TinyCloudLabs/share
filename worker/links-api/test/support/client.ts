@@ -41,7 +41,7 @@ export const CLIENT_IP = "198.51.100.23";
  * Worker send it. A Cloudflare hostname answers a client-sent `CF-Connecting-IP` with a 403 from its edge (the edge
  * sets that header itself), so a run against one passes `null` and nothing is sent.
  */
-export function addressHeader(ip: string | null): Record<string, string> {
+function addressHeader(ip: string | null): Record<string, string> {
   return ip === null ? {} : { "CF-Connecting-IP": ip };
 }
 
