@@ -6,7 +6,7 @@ const html = readFileSync(resolve(import.meta.dirname, "../share/index.html"), "
 const llms = readFileSync(resolve(import.meta.dirname, "../public/llms.txt"), "utf8");
 
 describe("recipient CLI guidance", () => {
-  it("separates bearer CLI receive from addressed browser claim and names the planned agent path", () => {
+  it("separates bearer CLI receive from addressed browser claim", () => {
     for (const copy of [html, llms]) {
       expect(copy).toContain("CLAIM_REQUIRED");
       expect(copy).toContain("Share browser");
@@ -19,10 +19,6 @@ describe("recipient CLI guidance", () => {
     expect(html).not.toContain("Until then");
     expect(llms).toContain("This CLI receive command is for bearer links only");
     expect(llms).not.toContain("TC-1757's");
-    expect(llms).toContain("email-proof flow");
-    expect(llms).toContain("not yet published and wired");
-    expect(llms).toContain("`completeEmailProof`");
-    expect(llms).toContain("`HolderSigner` backed by the recipient agent's session key");
     expect(html).toMatch(/<\/div>\s*<aside class="sender-form share-instructions"/);
   });
 

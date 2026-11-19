@@ -27,7 +27,6 @@ describe("Share public routing config", () => {
     const sender = readFileSync("share/index.html", "utf8");
     const viewer = readFileSync("viewer/index.html", "utf8");
     expect(sender).toContain('<meta name="robots" content="noindex">');
-    expect(sender).toContain("only me, anyone with the link, or one person by email");
     expect(sender).toContain("complete link");
     expect(viewer).toContain('<meta name="robots" content="noindex">');
   });

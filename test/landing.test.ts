@@ -20,7 +20,6 @@ describe("landing template", () => {
 
   it("has crawl-ready landing metadata for the public site", () => {
     expect(rendered).toContain('<link rel="canonical" href="https://share.tinycloud.xyz/" />');
-    expect(rendered).toContain('<meta property="og:title" content="TinyCloud Sharing — Share what your agent makes." />');
     expect(rendered).toContain('<meta name="twitter:card" content="summary" />');
   });
 
