@@ -93,6 +93,21 @@ export function filesForYouPermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.kv", space: FILES_FOR_YOU_SPACE, path: FILES_FOR_YOU_PREFIX, actions: ["get", "put", "list"], skipPrefix: true }];
 }
 
+/** The account space, which holds the account's own registry (its spaces, apps and delegation list). */
+const ACCOUNT_SPACE = "account";
+
+/*
+ * The account-registry rows the library reads itself: the delegation list
+ * (share status and owner revoke list the account's grants) and the space
+ * records (a restored session is checked with one read of its space's record).
+ */
+export function accountRegistryReadPermissions(): PermissionEntry[] {
+  return [
+    { service: "tinycloud.delegation", space: ACCOUNT_SPACE, path: "", actions: ["list"], skipPrefix: true },
+    { service: "tinycloud.kv", space: ACCOUNT_SPACE, path: "spaces/", actions: ["get"], skipPrefix: true },
+  ];
+}
+
 /** Why an OpenKey approval did not produce a usable signature. */
 export type WalletApprovalFailure = "cancelled" | "timeout" | "wrong-account";
 
@@ -520,16 +535,18 @@ export function shareManifest(address: string): Manifest {
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(address), actions: ["decrypt", "network.create"], skipPrefix: true },
       // Decrypt on the share/ prefix, built by the SDK: the node registers a share's policy only for an owner holding decrypt on the share's key.
       ...pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }),
+      ...accountRegistryReadPermissions(),
     ],
   };
 }
 
 /** The scope of `shareManifest`: where Share's library may read and write, and nothing else. */
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
-  allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE],
-  allowedServices: ["kv", "vault", "encryption"],
-  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create"],
+  allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE, ACCOUNT_SPACE],
+  allowedServices: ["kv", "vault", "encryption", "delegation"],
+  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "tinycloud.delegation/list"],
   allowedPathPrefixes: [
+    { space: ACCOUNT_SPACE, prefix: "spaces/" },
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },
     { space: FILES_FOR_YOU_SPACE, prefix: FILES_FOR_YOU_PREFIX },
