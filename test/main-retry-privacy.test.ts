@@ -87,4 +87,51 @@ describe("Try again on the unavailable screen", () => {
     expect(document.title).not.toContain(SECRET);
     expect(document.documentElement.outerHTML).not.toContain(SECRET);
   });
+
+  it("opens a second link navigated by hash change, scrubbing it like the first", { timeout: 60_000 }, async () => {
+    const replaceState = vi.spyOn(window.history, "replaceState");
+
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(1), WAIT);
+
+    const secondSecret = "FAKE-LINK-SECRET-bb2c";
+    window.history.replaceState(null, "", `/viewer#tc1=${secondSecret}`);
+    // jsdom dispatches addEventListener handlers but not the onhashchange
+    // property handler, so invoke it the way a real hash navigation would.
+    window.onhashchange?.(new HashChangeEvent("hashchange"));
+
+    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(2), WAIT);
+    const secondHref = state.receive.mock.calls[1]![0] as string;
+    expect(secondHref).toContain(secondSecret);
+    expect(secondHref).not.toContain(SECRET);
+    // The second launch scrubs the address bar exactly like arrival did.
+    expect(replaceState).toHaveBeenLastCalledWith(null, "", "/viewer");
+    expect(window.location.hash).toBe("");
+  });
+
+  it("a stale Try-again cannot revive an older share after a newer link booted", { timeout: 60_000 }, async () => {
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(document.querySelector("#viewer h1")?.textContent).toBe("TinyCloud is temporarily unavailable"), WAIT);
+    expect(state.receive).toHaveBeenCalledTimes(1);
+    const staleButton = document.querySelector<HTMLButtonElement>("#viewer button.viewer-state-action")!;
+
+    // Share B supersedes A while A's retry button is still rendered.
+    const secondSecret = "FAKE-LINK-SECRET-cc3d";
+    window.history.replaceState(null, "", `/viewer#tc1=${secondSecret}`);
+    window.onhashchange?.(new HashChangeEvent("hashchange"));
+    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(2), WAIT);
+    // B's boot is fully settled once its own failure screen replaced A's.
+    await vi.waitFor(() => {
+      const button = document.querySelector<HTMLButtonElement>("#viewer button.viewer-state-action");
+      expect(button).not.toBeNull();
+      expect(button).not.toBe(staleButton);
+    }, WAIT);
+
+    staleButton.click();
+    // The stale retry re-enters the same async boot path; awaiting a macrotask
+    // flush via waitFor's interval proves no third receive occurred.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(state.receive).toHaveBeenCalledTimes(2);
+    expect(state.receive.mock.calls[1]![0]).toContain(secondSecret);
+  });
 });

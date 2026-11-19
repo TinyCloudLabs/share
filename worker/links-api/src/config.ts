@@ -73,10 +73,15 @@ export const LIMITS = {
     { limit: 200, windowSeconds: 86_400 },
   ],
   issuerDelete: [{ limit: 60, windowSeconds: 60 }],
+  /** Every create attempt counts against the minute window. The daily window counts the attempts refused after the address check. */
   addressCreate: [
     { limit: 30, windowSeconds: 60 },
     { limit: 600, windowSeconds: 86_400 },
   ],
+  /** Creates admitted with a valid signature or an approved API key, per address and UTC day. */
+  addressVerifiedCreate: { limit: 2_000, windowSeconds: 86_400 },
+  /** Signed creates from every address together, per UTC day; approved API keys are outside it. */
+  publicCreate: { limit: 3_000, windowSeconds: 86_400 },
   addressRefused: { limit: 60, windowSeconds: 60 },
   addressRead: { limit: 120, windowSeconds: 60 },
   addressDelete: { limit: 120, windowSeconds: 60 },

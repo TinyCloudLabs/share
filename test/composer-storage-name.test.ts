@@ -11,6 +11,7 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-s
 import { safeStorageFilename, storageFilenameFor, uniqueStoragePaths } from "../src/share/composer-storage-name.js";
 import { SENDER_FAILURE } from "../src/share/sender-failure.js";
 import { ISSUER_DID, mockLinks, signWithIssuer } from "./fixtures/link-material.js";
+import { pathBoundKeys } from "./fixtures/path-bound-keys.js";
 
 const state = vi.hoisted(() => ({ published: [] as Array<Record<string, unknown>> }));
 vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
@@ -43,7 +44,7 @@ function owner() {
     credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
-    encryption: { encryptToNetwork: async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AA" } }) },
+    keys: pathBoundKeys(),
     kvForSpace: () => ({ put }),
     sharing: { generate, decodeLink: () => ({ path: "p", spaceId: SPACE_ID }), receive: async () => ({ ok: false as const, error: { message: "unused" } }) },
     signSessionBytes: signWithIssuer,
@@ -60,7 +61,7 @@ async function create(name: string, audience: "bearer" | "exactEmail") {
   const root = document.createElement("div"); document.body.append(root);
   mountShareComposer(root, {
     fetchFn: mockLinks().fetchFn,
-    openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud,
+    openKeyAddress: "0x1234567890abcdef1234567890abcdef12345678", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud,
     persistShare: async ({ share }) => { saved.push(share as never); },
   });
   const choice = root.querySelector<HTMLInputElement>(`input[name=recipient][value=${audience}]`)!;

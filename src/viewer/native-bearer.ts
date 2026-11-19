@@ -51,9 +51,32 @@ function delegationExpiry(token: string): string | undefined {
   }
 }
 
+/**
+ * A `tc1` fragment value the SDK's receive accepts. Correct links carry
+ * `tc1:<base64url>` (URL-encoded once for the fragment). Stranded links seen
+ * tonight carry the token percent-encoded a second time or without the inner
+ * `tc1:` prefix at all. Decode while encoded (bounded; a real payload is
+ * base64url and never contains '%'), then wrap a bare payload back.
+ */
+function normalizeNativeToken(token: string): string {
+  let decoded = token;
+  for (let i = 0; i < 3 && decoded.includes("%"); i += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      break; // malformed escape: hand the raw value to the SDK's own error path
+    }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded.startsWith("tc1:") ? decoded : `tc1:${decoded}`;
+}
+
+
 /** Receive the fragment token through TinyCloud SDK and invoke the delegated owner path. */
 export async function receiveNativeBearerAccess(href: string, receive: (token: string) => Promise<unknown> = (token) => TinyCloudWeb.receiveShare<Uint8Array>(token, undefined, { binary: true })): Promise<{ readonly path: string; readonly spaceId: string; readonly ownerNodeOrigin: string; readonly expiresAt: string; readonly bytes: Uint8Array }> {
-  const token = parseNativeShareUrl(href);
+  const token = normalizeNativeToken(parseNativeShareUrl(href));
   let received: ReceivedAccess;
   try {
     received = await receive(token) as ReceivedAccess;

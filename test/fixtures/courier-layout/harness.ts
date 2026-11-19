@@ -115,7 +115,7 @@ const store: CourierStore = {
 
 const root = document.querySelector<HTMLElement>("#courier-root")!;
 mountCourier(root, {
-  signIn: async () => ({ address: "0x9f8a000000000000000000000000000000c0ffee", store, dispose: async () => undefined, signOut: async () => true }),
+  signIn: async () => ({ address: "0x9f8a000000000000000000000000000000c0ffee", store, dispose: async () => undefined, signOut: async () => "openkey-ended" as const }),
   renderBody: (host, markdown, label) => {
     void renderMarkdownInto(host, markdown, "document").then(() => host.querySelector("iframe")?.setAttribute("title", label), () => undefined);
   },

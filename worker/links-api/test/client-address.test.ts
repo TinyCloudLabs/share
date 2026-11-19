@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLIENT_IP, addressHeader, clientAddressFor, get, makeIssuer, signedCreate, signedDelete, take } from "./support/client.ts";
+import { CLIENT_IP, clientAddressFor, get, makeIssuer, signedCreate, signedDelete, take } from "./support/client.ts";
 
 const HEADER = "CF-Connecting-IP";
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0);
@@ -65,10 +65,5 @@ describe("the test client's address header", () => {
       expect(live.headers.has(HEADER)).toBe(false);
       expect(local.headers.get(HEADER)).toBe(CLIENT_IP);
     });
-  });
-
-  it("addressHeader builds the one header or none", () => {
-    expect(addressHeader("198.51.100.1")).toEqual({ [HEADER]: "198.51.100.1" });
-    expect(addressHeader(null)).toEqual({});
   });
 });
