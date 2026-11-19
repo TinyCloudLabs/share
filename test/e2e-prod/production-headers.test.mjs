@@ -20,7 +20,7 @@ test("production-origin /courier sends only its own narrowed policy and the shar
   for (const pathname of ["/courier", "/courier/"]) {
     const headers = productionHeadersForPath(rules, pathname);
     const csp = headers["content-security-policy"];
-    assert.match(csp, /connect-src 'self' https:\/\/tee\.node\.tinycloud\.xyz https:\/\/registry\.tinycloud\.xyz https:\/\/openkey\.so;/, `${pathname} names exact hosts`);
+    assert.match(csp, /connect-src 'self' https:\/\/node\.tinycloud\.xyz https:\/\/tee\.node\.tinycloud\.xyz https:\/\/registry\.tinycloud\.xyz https:\/\/openkey\.so;/, `${pathname} names exact hosts`);
     assert.doesNotMatch(csp, /connect-src[^;]*(?: https:(?: |;)|\*)/, `${pathname} has no wildcard connect source`);
     assert.match(csp, /require-trusted-types-for 'script'/);
     assert.match(csp, /frame-ancestors 'none'/);
