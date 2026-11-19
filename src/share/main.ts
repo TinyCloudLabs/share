@@ -1,3 +1,4 @@
+import type { AuthResult } from "@openkey/sdk";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import type { ComposerPrefill } from "./send-again.js";
@@ -6,6 +7,7 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -20,7 +22,11 @@ interface SenderApp {
   readonly config: SharePublicConfig;
 }
 
-function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string): void {
+/** `resume`: the OpenKey account of a library session saved on this device; the page then resumes it without a tap. */
+function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string): void {
+  const resumable = resume !== undefined;
+  // The first attempt rebuilds a managed key's session without opening OpenKey; Continue after a failure connects as usual.
+  let reopen = resume?.keyType === "MANAGED" ? resume : undefined;
   root.removeAttribute("aria-busy");
   root.replaceChildren();
   const shell = document.createElement("main"); shell.className = "sender-shell auth-shell";
@@ -41,16 +47,25 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
   }
   const badge = document.createElement("div"); badge.className = "openkey-mark"; badge.setAttribute("aria-hidden", "true"); badge.textContent = "OK";
   const heading = document.createElement("h2"); heading.textContent = resumable ? "Welcome back" : "One key, your files";
-  const copy = document.createElement("p"); copy.className = "auth-copy"; copy.textContent = resumable ? "Your sharing session on this device is still active. Continue to pick up where you left off." : "Sign in with Face ID or Touch ID. No password.";
+  const copy = document.createElement("p"); copy.className = "auth-copy"; copy.textContent = resumable ? "" : "Sign in with Face ID or Touch ID. No password.";
   const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button button-primary auth-button"; submit.textContent = resumable ? "Continue" : "Continue with OpenKey";
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
   if (notice !== undefined) status.textContent = notice;
-  if (resumable) submit.focus();
+  // A saved session resumes on its own (below), so there is nothing to press and nothing to claim unless that fails.
+  submit.hidden = resumable;
+  copy.hidden = resumable;
   form.addEventListener("submit", (event) => {
-    event.preventDefault(); submit.disabled = true; status.textContent = "Loading secure sign-in…";
+    event.preventDefault(); submit.disabled = true;
+    const account = reopen; reopen = undefined;
+    // A resume opens no OpenKey window: what it does first is reach the encrypted TinyCloud.
+    status.textContent = account !== undefined ? "Connecting to your encrypted TinyCloud…" : "Loading secure sign-in…";
     void import("./openkey-session.js")
-      .then(({ authenticateWithOpenKey }) => authenticateWithOpenKey((message) => { status.textContent = message; }))
+      .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }).then((session) => {
+        // OpenKey connected in this tab, so it now holds a sign-in here that Sign out can end.
+        markOpenKeySignedInHere();
+        return session;
+      }))
       .then((session) => proceed(session, status))
       .catch((error) => {
         // TC-335: `error.message` used to be rendered here verbatim. Everything
@@ -62,9 +77,18 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
         console.debug("tinycloud share: sign-in failed");
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
         status.textContent = authFailureMessage(error);
+        submit.hidden = false;
         submit.disabled = false;
+        if (resumable) {
+          copy.textContent = "Sign in with OpenKey to continue.";
+          copy.hidden = false;
+          submit.focus();
+        }
       });
   });
+  // No tap, and for a managed key no OpenKey window either: the signer is rebuilt from the saved account and the SDK
+  // restores the session without an approval. Continue appears only if that fails.
+  if (resumable) form.requestSubmit();
 }
 
 const root = document.getElementById("share-app");
@@ -130,7 +154,7 @@ function render(): void {
 window.addEventListener("hashchange", render);
 
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
-  status.textContent = "Signed in. Loading your shares…";
+  status.textContent = "Connecting to your encrypted TinyCloud…";
   const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }] = await Promise.all([
     import("../email-share/config.js"),
     import("./openkey-session.js"),
@@ -138,6 +162,10 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   ]);
   const config = await loadSharePublicConfig();
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
+  // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
+  status.textContent = "Signed in. Loading your shares…";
+  // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
+  saveLibraryAccount(session.auth);
   const unlocked = await tinycloud.vault.unlock();
   if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
   app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
@@ -148,13 +176,13 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
       session, tinycloud,
       onSignedOut: (notice) => {
         // The session is gone: no screen may keep using it, and nothing in memory may start another request with it.
-        app = undefined; renderToken += 1; view.replaceChildren();
+        app = undefined; renderToken += 1; view.replaceChildren(); forgetLibraryAccount();
         // Nor may anything it left running block the next sign-in: revokes in flight, the open wallet request, and the screens' listeners.
         resetRevokeFlights(); resetWalletApproval();
         for (const end of screenEnds) end();
         screenEnds.clear();
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-        mountAuthentication(root as HTMLElement, false, bootstrap, notice);
+        mountAuthentication(root as HTMLElement, undefined, bootstrap, notice);
       },
     });
   });
@@ -165,4 +193,5 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   render();
 }
 
-mountAuthentication(root, false, bootstrap);
+// A library session saved on this device resumes on its own; otherwise the sign-in wall.
+mountAuthentication(root, savedLibraryAccount(), bootstrap);

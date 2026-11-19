@@ -11,7 +11,7 @@ vi.mock("@openkey/sdk", () => ({
 vi.mock("@tinycloud/web-sdk", () => ({
   TinyCloudWeb: class {
     constructor(config: Record<string, unknown>) { state.config = config; }
-    async signIn(): Promise<void> {}
+    async signIn(): Promise<{ address: string; siwe: string }> { return { address: "0x1234567890abcdef1234567890abcdef12345678", siwe: "" }; }
     async ensureOwnedSpaceHosted(): Promise<string> { return "applications"; }
   },
 }));

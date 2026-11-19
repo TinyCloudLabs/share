@@ -21,9 +21,9 @@ export function createRepairPorts(): RepairPorts {
       const config = await loadSharePublicConfig();
       let client: TinyCloudWeb | undefined;
       let observed: RepairFailure | undefined;
-      const guardApproval: ApprovalGuard = async (wait) => {
+      const guardApproval: ApprovalGuard = async (wait, info) => {
         try {
-          return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait());
+          return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait(), info);
         } catch (error) {
           if (error instanceof Error && error.message === "revoke-approval-abandoned") observed ??= "timeout";
           else if (error instanceof Error && error.message === "revoke-another-approval") observed ??= "busy";

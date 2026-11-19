@@ -50,10 +50,15 @@ export interface SignInPlan {
 /** The runtime session: the app's data, and when it may no longer be used. */
 export interface RuntimeSession {
   readonly data: AppData;
-  /** Epoch ms after which the session may no longer be used (the sign-in time plus one hour, less a margin). */
+  /** Epoch ms after which the session may no longer be used (the signed session's own expiry, less a margin). */
   readonly expiresAt: number;
-  /** Ends the session and OpenKey's sign-in. Safe to call twice. */
+  /** Ends the session and OpenKey's sign-in, clearing the saved session. Safe to call twice. */
   end(): Promise<void>;
+  /**
+   * Drops this page's hold on the session for an unload or teardown that is not a sign-out:
+   * the saved session stays, so a later open of the same app restores it. Safe to call twice.
+   */
+  detach(): Promise<void>;
 }
 
 /** What the one sign-in yields: the saved files as read, a create-only write, and the runtime session the app runs on. */

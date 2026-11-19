@@ -1,10 +1,15 @@
 /**
  * Real /courier smoke (TC-712 G7).
  *
- * Signs a brand-new throwaway OpenKey account (email OTP through a public
- * Mailinator inbox) into the candidate /courier view, served at the production
+ * Signs a brand-new throwaway OpenKey account (email OTP through a private
+ * mail.tm inbox made for the run, deleted at its end) into the candidate /courier view, served at the production
  * origin, against production OpenKey and the production owner node. No real
- * person's account or key is involved: every run creates a new inbox.
+ * person's account or key is involved: every run creates a new inbox. Every click
+ * in OpenKey's widget is real browser input, as a person's is. An Approve click
+ * counts only once OpenKey took it (a sign call after the click, "Signing…", or
+ * the review closing; a button that is only disabled is not taken); a dropped
+ * click is reported (approveClicksNotTaken, approveClicksDropped) and retried.
+ * Each step's OpenKey signatures must equal its counted approvals.
  *
  *   node test/e2e-prod/courier-live-smoke.mjs
  *
@@ -25,36 +30,53 @@
  *     and reads back.
  *
  * Output: one JSON line (and COURIER_SMOKE_ARTIFACT). The inbox, OTP, address,
- * keys and message text never leave process memory. COURIER_SMOKE_SHOT_DIR
- * keeps screenshots.
+ * keys and message text never leave process memory. Refused TinyCloud/OpenKey
+ * responses are reported with their status, error code and a scrubbed body.
+ * COURIER_SMOKE_SHOT_DIR keeps screenshots.
+ *
+ * COURIER_SMOKE_DID_FILE (off by default) appends the run's throwaway owners, one
+ * "<owner DID> <inbox email>" line each, to a 0600 file under /var/tmp for the QA
+ * exclusion list; the path is checked before the run starts and again before the
+ * write, which also happens when the run is stopped (before its inboxes are deleted).
+ * Its contents are never printed or reported: the report says only
+ * `didFile: written n/m` or `refused`.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { build } from "vite";
+import { clickApprove, signatureMismatch, signaturesFor, signedSince, watchSignatures } from "./approval-click.mjs";
+import { bodySandboxOk } from "./body-frame.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
+import { createOtpGate, isOtpSend } from "./otp-gate.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
+import { refusal, scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.COURIER_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
-const MAILINATOR = "https://www.mailinator.com/api/v2/domains/public/inboxes";
 const shotDir = process.env.COURIER_SMOKE_SHOT_DIR;
 const AGENTS = "agents";
 const PREFIX = "xyz.tinycloud.courier/";
-const newInbox = () => `tc-courier-smoke-${randomBytes(8).toString("hex")}`;
-let inbox = newInbox();
+/** The current identity's private inbox (mail-tm.mjs); every inbox made in the run is deleted at its end. */
+const mailboxes = [];
+let mailbox;
+/** The opt-in owner record (COURIER_SMOKE_DID_FILE), checked at start; undefined when off. */
+let didFile;
+let ownersRecorded = false;
+// Synchronous, once: the owners go only to the opt-in 0600 file; the report says just whether it was written.
+function recordOwners() {
+  if (didFile === undefined || ownersRecorded) return;
+  ownersRecorded = true;
+  try { report.didFile = `written ${writeDidFile(didFile, mailboxes.map((entry) => ({ did: entry.did, email: entry.address })))}/${mailboxes.length}`; }
+  catch { report.didFile = "refused"; }
+}
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-const scrub = (value) => String(value)
-  .replace(/#\S*/g, "#<fragment>")
-  .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
-  .replace(/0x[0-9a-fA-F]{40}/g, "0x<address>")
-  .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
-  .replace(/\b\d{6,8}\b/g, "<digits>");
 
 const EXPECTED_VIEW_GRANT = [
   "agents/capabilities tinycloud.capabilities/read",
@@ -63,35 +85,70 @@ const EXPECTED_VIEW_GRANT = [
   "agents/kv/xyz.tinycloud.courier/me/approvals/ tinycloud.kv/put",
   "agents/kv/xyz.tinycloud.courier/me/orders/ tinycloud.kv/put",
 ].sort();
-const report = { type: "tinycloud.share/courier-live-smoke/v2", openkey: OPENKEY, result: "failed", stage: "start", approvals: {}, approvalClicks: {}, approvalCountUnit: "OpenKey Approve-button clicks; no passkey ceremony measured", timingsMs: {} };
+const report = { type: "tinycloud.share/courier-live-smoke/v2", openkey: OPENKEY, result: "failed", stage: "start", approvals: {}, approvalClicks: {}, signatures: {}, approveClicksNotTaken: 0, approvalCountUnit: "OpenKey Approve clicks OpenKey took (a sign call, Signing…, or the review closing); signatures must equal them per step", timingsMs: {} };
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
 
-async function mailinator(path) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    const response = await fetch(`${MAILINATOR}/${inbox}${path}`, { headers: { "user-agent": "tinycloud-courier-smoke" } }).catch(() => undefined);
-    if (response?.ok) { const text = await response.text(); if (text.trim()) return JSON.parse(text); }
-    await sleep(2_000 * attempt);
-  }
-  return {};
+/** A new private inbox ("qa" in the name) for the next identity; its password stays in memory. */
+async function newMailbox() {
+  mailbox = await createInbox("courier-smoke");
+  mailboxes.push(mailbox);
 }
+
+async function deleteMailboxes() {
+  const { deleted, total } = await deleteInboxes();
+  report.inboxesDeleted = `${deleted}/${total}`;
+}
+// A stopped run (Ctrl-C, kill) does not reach `finally`: still record the owners (first, while the
+// accounts are known), then delete the inboxes.
+deleteInboxesOnStop({ before: recordOwners });
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
 const usedMail = new Set();
-async function openKeyOtp(timeout = 150_000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const { msgs = [] } = await mailinator("");
-    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id)).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
-    for (const message of codeMail) {
-      const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
-      const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
-      if (codes.size === 1) { usedMail.add(message.id); return [...codes][0]; }
-    }
-    await sleep(4_000);
+// OpenKey allows 3 code sends per 60 s per IP: one gate spaces every send of the run ≥ 21 s apart
+// (report.otpSends: when, and the gap to the previous one). Each "Send code" click arms its own
+// refusal: a failed send that STARTED after that click (429 → OpenKey's per-IP rate limit; any other
+// 4xx/5xx → a send failure) ends that wait for the mail at once instead of after 150 s, and the
+// mail poll stops. A refusal from an earlier send never fails a later wait.
+const otpGate = createOtpGate({ minGapMs: 21_000, now: since });
+let otpAttempt;
+const otpSendStarted = new WeakMap();
+const otpSendRefused = (request, status) => {
+  const startedAt = otpSendStarted.get(request);
+  if (otpAttempt === undefined || startedAt === undefined || startedAt < otpAttempt.armedAt) return;
+  otpAttempt.refuse(new Error(status === 429
+    ? "OpenKey OTP rate limit (per IP): the code send was refused with 429"
+    : `OpenKey OTP send failed: the code send answered ${status}`));
+};
+/** Watches a page's OpenKey code sends: records each in the gate, and refuses the current wait on failure. */
+const watchedForOtp = new WeakSet();
+function watchOtpSends(page) {
+  if (watchedForOtp.has(page)) return;
+  watchedForOtp.add(page);
+  page.on("request", (request) => {
+    if (!isOtpSend(request.method(), request.url())) return;
+    otpSendStarted.set(request, since());
+    (report.otpSends ??= []).push(otpGate.record(since()));
+  });
+  page.on("response", (response) => { if (response.status() >= 400 && isOtpSend(response.request().method(), response.url())) otpSendRefused(response.request(), response.status()); });
+  page.on("requestfailed", (request) => { if (isOtpSend(request.method(), request.url())) otpSendRefused(request, 0); });
+}
+/** Arms a refusal for the "Send code" click about to happen. */
+function armOtpSend() {
+  let refuse;
+  const refused = new Promise((_, reject) => { refuse = reject; });
+  refused.catch(() => undefined);
+  otpAttempt = { armedAt: since(), refuse, refused };
+}
+async function openKeyOtp() {
+  const stop = new AbortController();
+  try {
+    return await Promise.race([openKeyCode(mailbox, { used: usedMail, signal: stop.signal }), otpAttempt.refused]);
+  } finally {
+    stop.abort(new Error("the wait for the code ended"));
+    otpAttempt = undefined;
   }
-  throw new Error("no OpenKey code arrived in the Mailinator inbox");
 }
 
 const frameAt = (page, path) => page.frames().find((frame) => frame.url().startsWith(`${OPENKEY}${path}`));
@@ -104,11 +161,26 @@ async function until(probe, timeout, what) {
   }
   throw new Error(`timed out waiting for ${what}`);
 }
-const clickButton = (frame, label) => frame.evaluate((text) => {
-  const button = [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled);
-  button?.click();
-  return button !== undefined;
-}, label);
+// Every click in an OpenKey frame is real browser input (Puppeteer's element click), never a
+// script-made click: OpenKey ignores script-made clicks on a framed approval.
+async function clickHandle(handle) {
+  try {
+    const button = handle.asElement();
+    if (!button) return false;
+    await button.click();
+    return true;
+  } finally {
+    await handle.dispose();
+  }
+}
+const clickButton = async (frame, label) => clickHandle(await frame.evaluateHandle((text) =>
+  [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled) ?? null, label));
+/** OpenKey sign calls of every page, with the step each started in (approval-click.mjs). */
+const signCalls = {};
+/** The drive step under way (the counter), for attributing sign calls. */
+let currentStep = "none";
+/** When each OpenKey review frame first appeared (for a dropped click's timing). */
+const reviewSeen = new WeakMap();
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
@@ -119,6 +191,14 @@ const installSignCapture = (page) => page.evaluateOnNewDocument(() => {
     if (data !== null && typeof data === "object" && data.type === "openkey:sign:request" && typeof data.message === "string") window.__tcSigned.push(data.message);
   });
 });
+
+/** A signed SIWE's "Issued At" and "Expiration Time" and the lifetime between them; nothing else of the message. */
+function siweTimes(message) {
+  const at = (label) => { const value = new RegExp(`^${label}: (\\S+)$`, "m").exec(String(message))?.[1]; return value !== undefined && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null; };
+  const issuedAt = at("Issued At");
+  const expirationTime = at("Expiration Time");
+  return { issuedAt, expirationTime, lifetimeMinutes: issuedAt && expirationTime ? Math.round((Date.parse(expirationTime) - Date.parse(issuedAt)) / 60_000) : null };
+}
 
 /** `<space>/<service>/<path> <ability>` for every capability in a signed session message's ReCap. */
 function recapList(message) {
@@ -131,6 +211,7 @@ function recapList(message) {
 let emailDone = false;
 /** Drives OpenKey (email sign-in the first time, every sign review) until `done` holds in the page. */
 async function drive(page, done, counter, timeout = 240_000) {
+  currentStep = counter;
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (Date.now() - (deadline - timeout) > 100_000 && report.stuck === undefined) {
@@ -149,7 +230,9 @@ async function drive(page, done, counter, timeout = 240_000) {
     if (connect !== undefined && await clickButton(connect, "Continue with email").catch(() => false)) {
       setStage("openkey-email");
       const field = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
-      await field.type(`${inbox}@mailinator.com`);
+      await field.type(mailbox.address);
+      await otpGate.wait();
+      armOtpSend();
       await until(() => clickButton(connect, "Send code"), 10_000, "Send code");
       setStage("openkey-otp");
       const otp = await openKeyOtp();
@@ -162,9 +245,23 @@ async function drive(page, done, counter, timeout = 240_000) {
     }
     const sign = frameAt(page, "/widget/embed/sign");
     if (sign !== undefined) {
+      if (!reviewSeen.has(sign)) reviewSeen.set(sign, since());
       const messages = await sign.evaluate(() => window.__tcSigned ?? []).catch(() => []);
-      for (const message of messages) if (!signedMessages.includes(message)) signedMessages.push(message);
-      if (await clickButton(sign, "Approve").catch(() => false)) {
+      for (const message of messages) {
+        if (signedMessages.includes(message)) continue;
+        signedMessages.push(message);
+        // The identity's owner, for the opt-in DID file only (never printed or reported).
+        if (mailbox !== undefined && mailbox.did === undefined) mailbox.did = didFromSiwe(message);
+      }
+      // Approve by role, position and name (approval-click.mjs). A click counts only once OpenKey took
+      // it: a sign call after the click, "Signing…", or the review closing; a button that is only
+      // disabled is not taken. A dropped click is reported (approveClicksNotTaken/Dropped) and retried.
+      const taken = await clickApprove({
+        sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign),
+        closed: () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(),
+        signedSince: (fromMs) => signedSince(signCalls, fromMs),
+      }).catch(() => false);
+      if (taken) {
         report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
         const message = messages.at(-1) ?? "";
         let kind;
@@ -175,10 +272,19 @@ async function drive(page, done, counter, timeout = 240_000) {
           kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
         }
         (report.approvalClicks[counter] ??= []).push(kind);
+        // The signed message's own times, so a grant's real lifetime is in the report (times only).
+        (report.signedTimes ??= {})[counter] = [...(report.signedTimes[counter] ?? []), { kind, ...siweTimes(message) }];
         await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
       }
     }
-    if (await page.evaluate(done).catch(() => false)) return;
+    if (await page.evaluate(done).catch(() => false)) {
+      // Counted approvals must equal OpenKey's signatures for the step, once its sign calls settled.
+      await until(() => [...(signCalls.open?.values() ?? [])].every((call) => call.step !== counter), 5_000, "the step's sign calls to settle").catch(() => undefined);
+      report.signatures[counter] = signaturesFor(signCalls, counter);
+      const mismatch = signatureMismatch(report.approvals[counter] ?? 0, report.signatures[counter]);
+      assert(mismatch === null, `${counter}: ${mismatch}`);
+      return;
+    }
     for (const frame of page.frames().filter((candidate) => candidate.url().startsWith(OPENKEY))) {
       const alert = await frame.evaluate(() => [...document.querySelectorAll("[role=alert]")].map((node) => node.textContent ?? "").join(" ").trim()).catch(() => "");
       if (alert) { report.openKeyAlert = scrub(alert).replace(/\s+/g, " ").slice(0, 200); throw new Error("OpenKey showed an error"); }
@@ -194,6 +300,9 @@ const panelText = (page) => page.evaluate(() => (document.querySelector(".cr-pan
 const temporary = mkdtempSync(join(tmpdir(), "courier-smoke-"));
 let browser; let server;
 try {
+  // Checked before anything touches production: a bad path stops the run here.
+  setStage("options");
+  didFile = didFileTarget();
   if (shotDir !== undefined) mkdirSync(shotDir, { recursive: true });
   setStage("build");
   const dist = join(temporary, "dist");
@@ -209,19 +318,30 @@ try {
     args: ["--disable-quic", "--no-proxy-server", `--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1:${server.port}`, `--ignore-certificate-errors-spki-list=${spki}`, ...(process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [])],
     userDataDir: join(temporary, "profile"),
   });
+  // Every page target is watched for OpenKey sign calls, popups included (OpenKey's "continue in a
+  // new window" path), so no signature can come from an unwatched page.
+  browser.on("targetcreated", async (target) => {
+    if (target.type() !== "page") return;
+    const page = await target.page().catch(() => null);
+    if (page) { watchSignatures(page, { calls: signCalls, step: () => currentStep, at: since }); watchOtpSends(page); }
+  });
 
   let context = await browser.createBrowserContext();
   const open = async (path, width = 1280) => {
     const page = await context.newPage();
     await page.setViewport({ width, height: 900 });
     await installSignCapture(page);
+    watchSignatures(page, { calls: signCalls, step: () => currentStep, at: since });
+    watchOtpSends(page);
     page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${scrub(error.message).slice(0, 200)}`));
     page.on("console", (message) => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(scrub(message.text()).slice(0, 200)); });
-    page.on("response", (response) => {
+    page.on("response", async (response) => {
       const url = new URL(response.url());
       if (response.status() >= 400 && /tinycloud|openkey/.test(url.origin)) {
         const path = url.pathname.startsWith("/v1/locations/") ? "/v1/locations/<owner-did>" : scrub(url.pathname).slice(0, 100);
-        (report.failedResponses ??= []).push({ method: response.request().method(), host: url.host, path, status: response.status() });
+        const entry = { method: response.request().method(), host: url.host, path, status: response.status() };
+        (report.failedResponses ??= []).push(entry);
+        Object.assign(entry, refusal(await response.text().catch(() => "")));
       }
     });
     await page.goto(`${SHARE}${path}`, { waitUntil: "domcontentloaded", timeout: 90_000 });
@@ -244,12 +364,15 @@ try {
   };
 
   // Fresh identity: signing in reads an absent space, and must not create it.
+  setStage("inbox");
+  await newMailbox();
   setStage("view-fresh");
   const freshStart = Date.now();
   const { page: fresh, grant: freshGrant } = await signInView("freshViewSignIn");
   report.timingsMs.firstSignIn = since(freshStart);
   report.recap = freshGrant;
-  report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null) };
+  const freshFailure = await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null);
+  report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: freshFailure === null ? null : scrub(freshFailure).slice(0, 200) };
   assert.equal(report.fresh.signInFailure, null);
   assert.match(report.fresh.panel, /No Courier space yet\./);
   assert.ok(report.fresh.panel.includes("Run tc courier init once on your machine, then reload this page."));
@@ -257,7 +380,8 @@ try {
   await context.close();
 
   // Separate identity/context: test tooling creates an existing mailbox before the view signs in.
-  inbox = newInbox();
+  setStage("inbox");
+  await newMailbox();
   usedMail.clear();
   context = await browser.createBrowserContext();
 
@@ -289,9 +413,28 @@ try {
   await view.waitForSelector(".cr-message--peer", { timeout: 60_000 });
   await view.waitForSelector(".cr-body iframe", { timeout: 30_000 });
   await sleep(800);
-  const thread = await view.evaluate(() => ({ messages: document.querySelectorAll(".cr-message").length, tasks: document.querySelectorAll(".cr-task").length, state: document.querySelector(".cr-state")?.textContent, sandbox: [...document.querySelectorAll(".cr-body iframe")].map((frame) => frame.getAttribute("sandbox")) }));
-  assert.deepEqual({ messages: thread.messages, tasks: thread.tasks, state: thread.state }, { messages: 2, tasks: 1, state: "Waiting for you to approve" });
-  assert.ok(thread.sandbox.every((value) => value === ""), "every body is in a fully sandboxed frame");
+  const thread = await view.evaluate(() => ({ messages: document.querySelectorAll(".cr-message").length, tasks: document.querySelectorAll(".cr-task").length, state: document.querySelector(".cr-state")?.textContent }));
+  assert.deepEqual(thread, { messages: 2, tasks: 1, state: "Waiting for you to approve" });
+  // Bodies render lazily (when near the viewport) and asynchronously: bring each into view and wait
+  // until it has its frame, or the plain-text fallback (pre.viewer-source) a failed render leaves.
+  const bodyCount = await view.evaluate(() => document.querySelectorAll(".cr-body").length);
+  for (let index = 0; index < bodyCount; index++) {
+    await view.evaluate((i) => document.querySelectorAll(".cr-body")[i]?.scrollIntoView({ block: "center" }), index);
+    await view.waitForFunction((i) => { const host = document.querySelectorAll(".cr-body")[i]; return host !== undefined && (host.querySelector("iframe") !== null || host.querySelector("pre.viewer-source") !== null); }, { timeout: 30_000 }, index);
+  }
+  const bodies = await view.evaluate(() => {
+    const hosts = [...document.querySelectorAll(".cr-body")];
+    return { bodies: hosts.length, frames: hosts.filter((host) => host.querySelector("iframe") !== null).length, fallbacks: hosts.filter((host) => host.querySelector("pre.viewer-source") !== null).length, sandbox: hosts.flatMap((host) => [...host.querySelectorAll("iframe")].map((frame) => frame.getAttribute("sandbox"))) };
+  });
+  // Every body frame keeps the body inert: a sandbox attribute present, granting at most link popups
+  // (no scripts, no same origin; popups are intended since 50d96ed). body-frame.mjs, unit tested.
+  report.bodyFrames = { bodies: bodies.bodies, frames: bodies.frames, fallbacks: bodies.fallbacks };
+  report.bodySandboxes = bodies.sandbox.map((value) => (value === null ? null : String(value).slice(0, 80)));
+  assert.ok(bodies.bodies >= 1, "at least one message body was checked");
+  assert.equal(bodies.fallbacks, 0, "no message body fell back to plain text");
+  assert.equal(bodies.frames, bodies.bodies, "every message body rendered in a frame");
+  assert.equal(bodies.sandbox.length, bodies.bodies, "one frame per message body");
+  assert.ok(bodies.sandbox.every(bodySandboxOk), `every body frame is sandboxed with at most popups (got ${JSON.stringify(report.bodySandboxes)})`);
   await shot(view, "03-thread");
 
   setStage("approve");
@@ -345,6 +488,8 @@ try {
   setStage("done");
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 500);
+  if (report.error.startsWith("OpenKey OTP rate limit")) report.classification = "openkey-otp-rate-limit (per IP)";
+  else if (report.error.startsWith("OpenKey OTP send failed")) report.classification = "openkey-otp-send-failed";
   report.consoleErrors = consoleErrors.slice(-10);
   const pages = await browser?.pages().catch(() => []) ?? [];
   const last = pages.at(-1);
@@ -352,6 +497,8 @@ try {
   if (shotDir !== undefined && last !== undefined) await last.screenshot({ path: join(shotDir, "failure.png") }).catch(() => undefined);
 } finally {
   report.timingsMs.total = since();
+  recordOwners();
+  await deleteMailboxes();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });

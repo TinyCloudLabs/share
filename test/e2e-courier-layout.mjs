@@ -12,7 +12,7 @@
  * It also proves the approval flow in a real browser: hostile text stays text,
  * Approve writes one create-only decision file with the request hash, a second
  * click writes nothing, and the thread's markdown arrives in sandboxed frames
- * with the remote image blocked.
+ * (at most link popups: no script, no same origin) with the remote image blocked.
  */
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
@@ -20,6 +20,7 @@ import { createServer as httpServer } from "node:http";
 
 import puppeteer from "puppeteer";
 import { createServer } from "vite";
+import { bodySandboxOk } from "./e2e-prod/body-frame.mjs";
 
 const screenshotDir = process.env.COURIER_LAYOUT_SCREENSHOT_DIR;
 const axeSource = await readFile(new URL("../node_modules/axe-core/axe.min.js", import.meta.url), "utf8");
@@ -99,7 +100,8 @@ try {
       await renderAllFrames(page, 3);
       const frames = await page.evaluate(() => [...document.querySelectorAll(".cr-body iframe")].map((frame) => ({ sandbox: frame.getAttribute("sandbox"), title: frame.title, html: frame.srcdoc })));
       assert.ok(frames.length >= 3, `the thread's bodies render in frames (${frames.length})`);
-      for (const frame of frames) assert.equal(frame.sandbox, "", "every body frame is fully sandboxed");
+      // The same allowlist as the live smoke: the attribute is present and grants at most link popups.
+      for (const frame of frames) assert.ok(bodySandboxOk(frame.sandbox), `every body frame is sandboxed with at most popups (got ${JSON.stringify(frame.sandbox)})`);
       const handoff = frames.find((frame) => frame.html.includes("Handoff to Sam"));
       assert.ok(handoff, "the handoff markdown rendered");
       assert.ok(!/<img[^>]+src=["']?https?:/i.test(handoff.html) && handoff.html.includes("viewer-blocked-image"), "the remote image is replaced by the blocked-image notice, never loaded");

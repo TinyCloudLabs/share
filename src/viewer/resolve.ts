@@ -32,7 +32,8 @@ export async function resolveShare(href: string, options: ResolveShareOptions = 
       expectedOrigin: options.expectedOrigin ?? "https://share.tinycloud.xyz",
       ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
       ...(options.now === undefined ? {} : { now: options.now }),
-      onResolvedAddressedEnvelope: (value, cid) => { envelope = value; shareCid = cid; },
+      // The SDK also reports the retired v2 envelope of a legacy compact link, which this viewer never accepts.
+      onResolvedAddressedEnvelope: (value, cid) => { if (value.version === 3) { envelope = value; shareCid = cid; } },
     });
     if (envelope !== undefined && shareCid !== undefined) return { state: "policy-authorization-required", envelope, shareCid };
     return { state: "unsupported", reason: "policy-target" };

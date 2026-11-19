@@ -5,7 +5,7 @@ import { READ_SIGNERS_ENV, parseReadSigners, type ReadSigner } from "./read-sign
  * quotas (contract sections 3 and 4.9); `MAX_LINK_BODY_BYTES` is the one body size limit for all types.
  */
 
-export const LINK_TYPES = ["openkey-login", "courier", "share"] as const;
+export const LINK_TYPES = ["openkey-login", "openkey-approval-request", "courier", "share"] as const;
 export type LinkType = (typeof LINK_TYPES)[number];
 
 export interface TypeConfig {
@@ -22,6 +22,12 @@ export const TYPE_CONFIG: Readonly<Record<LinkType, TypeConfig>> = {
   "openkey-login": {
     maxLifeSeconds: 600,
     readOnce: true,
+    quotaRows: 4_000,
+    quotaBytes: 134_217_728,
+  },
+  "openkey-approval-request": {
+    maxLifeSeconds: 86_400,
+    readOnce: false,
     quotaRows: 4_000,
     quotaBytes: 134_217_728,
   },
@@ -67,10 +73,15 @@ export const LIMITS = {
     { limit: 200, windowSeconds: 86_400 },
   ],
   issuerDelete: [{ limit: 60, windowSeconds: 60 }],
+  /** Every create attempt counts against the minute window. The daily window counts the attempts refused after the address check. */
   addressCreate: [
     { limit: 30, windowSeconds: 60 },
     { limit: 600, windowSeconds: 86_400 },
   ],
+  /** Creates admitted with a valid signature or an approved API key, per address and UTC day. */
+  addressVerifiedCreate: { limit: 2_000, windowSeconds: 86_400 },
+  /** Signed creates from every address together, per UTC day; approved API keys are outside it. */
+  publicCreate: { limit: 3_000, windowSeconds: 86_400 },
   addressRefused: { limit: 60, windowSeconds: 60 },
   addressRead: { limit: 120, windowSeconds: 60 },
   addressDelete: { limit: 120, windowSeconds: 60 },

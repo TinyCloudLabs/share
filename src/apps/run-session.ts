@@ -5,7 +5,9 @@
  * (dynamic imports).
  *
  * One sign-in per open (`signIn`, which calls the shared `signInWithManifest` in
- * src/share/openkey-session.ts). The requested manifest is the union built in grants.ts:
+ * src/share/openkey-session.ts). The session is persisted under the app's own storage
+ * prefix, so a later open inside its lifetime restores it — same owner, same origin,
+ * permissions still covered — with no new approval. The requested manifest is the union built in grants.ts:
  * the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`,
  * and create-only `put` on `<app_id>/knowledge/`. The same session reads the saved copy,
  * saves what is missing and runs the app.
@@ -16,7 +18,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
-import { withWalletApproval } from "../share/revoke-flight.js";
+import { CONNECT_WINDOW_MS, withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
 import { INSTALL_SPACE } from "./install-plan.ts";
@@ -44,15 +46,31 @@ export function runnerAppName(prefix: string, name: string): string {
   return isSignInLabel(cut) ? cut : `${prefix}Tiny app`;
 }
 
-/** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
+/**
+ * The SDK's session storage key prefix for one app: the app id under a 128-bit hash, so the prefix
+ * stays a valid label (app ids hold dots, which the sign-in's label guard refuses) and one app's
+ * saved session can never stand in for another's. The address inside the stored record binds the
+ * session to its owner; the prefix binds it to this app on this origin.
+ */
+export async function runnerSessionPrefix(appId: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(appId));
+  const hex = [...new Uint8Array(digest).slice(0, 16)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `tinycloud-share-runner-${hex}`;
+}
+
+/**
+ * Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. The runner's
+ * authorization is interactive (a first open can spend minutes in OpenKey's modal), so a signature waits as long as a
+ * connect does, five minutes, not the 60 s a revocation request lives.
+ */
 function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; observed(): RunFailure | undefined } {
   let locked = false;
   let failure: RunFailure | undefined;
   return {
-    guard: async (wait) => {
+    guard: async (wait, info) => {
       if (locked) throw new Error("runner-signing-closed");
       try {
-        return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait());
+        return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait(), info, CONNECT_WINDOW_MS);
       } catch (error) {
         if (error instanceof Error && error.message === "revoke-approval-abandoned") failure ??= "timeout";
         else if (error instanceof Error && error.message === "revoke-another-approval") failure ??= "busy";
@@ -165,7 +183,6 @@ export function createRunPorts(): RunPorts {
       const openkey = await import("../share/openkey-session.js");
       const config = await loadSharePublicConfig();
       const approvals = approvalGuard(hooks);
-      const startedAt = Date.now();
       let client: TinyCloudWeb | undefined;
       let signedIn: ManifestSignIn;
       try {
@@ -177,14 +194,18 @@ export function createRunPorts(): RunPorts {
           guardApproval: approvals.guard,
           onClient: (created) => { client = created; },
           appName: runnerAppName("TinyCloud Share: ", entry.name),
-          sessionPrefix: "tinycloud-share-runner",
+          // The session is persisted under this app's own prefix: a reload while it still lives
+          // (same owner, same origin, permissions still covered) restores it without a new
+          // approval, and it can never stand in for another app's or another account's session.
+          sessionPrefix: await runnerSessionPrefix(entry.app_id),
+          persistSession: true,
           expiry: RUNTIME_SESSION_MS,
         });
       } catch (error) {
         const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
         throw new RunError(reason ?? "failed", { cause: error });
       }
-      const { tinycloud, spaces, dispose } = signedIn;
+      const { tinycloud, spaces, detach, dispose } = signedIn;
       const space = spaces[INSTALL_SPACE];
       if (space === undefined) {
         await dispose();
@@ -205,13 +226,19 @@ export function createRunPorts(): RunPorts {
         ending ??= dispose();
         return ending;
       };
+      let detaching: Promise<void> | undefined;
+      const detachRuntime = (): Promise<void> => {
+        detaching ??= detach();
+        return detaching;
+      };
       return {
         files,
         put: (key, bytes, contentType): Promise<PutResult> => putCreateOnly(kv, key, bytes, contentType),
         runtime: {
           data: createAppData(tinycloud.kvForSpace(space), tinycloud.sqlForSpace(space)),
-          expiresAt: startedAt + RUNTIME_SESSION_MS - EXPIRY_MARGIN_MS,
+          expiresAt: signedIn.sessionExpiresAt - EXPIRY_MARGIN_MS,
           end,
+          detach: detachRuntime,
         },
       };
     },

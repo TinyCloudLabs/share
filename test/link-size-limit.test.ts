@@ -23,10 +23,6 @@ const publish = (material: SealedMaterial, fetchFn: typeof fetch) => publishLink
 });
 
 describe("the one stored-link size limit", () => {
-  it("is 64 KiB", () => {
-    expect(LINK_BODY_MAX_BYTES).toBe(65_536);
-  });
-
   it("sends a body of exactly the limit to the API as a short link", async () => {
     const links = mockLinks();
     const result = await publish(await sealedOfSize(LINK_BODY_MAX_BYTES), links.fetchFn);

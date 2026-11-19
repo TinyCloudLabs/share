@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
-import { CHECK_AGAIN_LABEL, CHECK_STATUS_LABEL, endSenderLibrary, freshnessConfirmed, FRESHNESS_CHECKING, FRESHNESS_PARTIAL, FRESHNESS_TIMEOUT, FRESHNESS_UNCONFIRMED, mountSenderHome, REVOKE_CONFIRM_CAVEAT, REVOKE_CONFIRM_STORED, STATUS_CHECK_BUDGET_MS } from "../src/share/sender-home.js";
+import { CHECK_AGAIN_LABEL, CHECK_STATUS_LABEL, endSenderLibrary, freshnessConfirmed, FRESHNESS_CHECKING, FRESHNESS_PARTIAL, FRESHNESS_TIMEOUT, FRESHNESS_UNCONFIRMED, mountSenderHome, REVOKE_CONFIRM_STORED, STATUS_CHECK_BUDGET_MS } from "../src/share/sender-home.js";
 import { createNodeStatusReader, STATUS_REQUEST_TIMEOUT_MS, type NodeShareState, type NodeStatusReader } from "../src/share/node-status.js";
 import { activeFlight, flightKey, resetRevokeFlights, RevokeFlight, withWalletApproval } from "../src/share/revoke-flight.js";
 import { resetWalletApproval, trackWalletApproval, walletApprovalOpen } from "../src/share/wallet-approval.js";
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 
-vi.mock("@tinycloud/sdk-core", () => ({ getPolicyRootStatusV3: vi.fn(async () => ({ state: "active" })), revokePolicyRootV3: vi.fn(async () => ({})), verifyEip191MessageSignature: async () => true }));
+vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3: vi.fn(async () => ({})), verifyEip191MessageSignature: async () => true, EXPIRY: { SESSION_MS: 30 * 24 * 60 * 60 * 1000 } }));
 
 afterEach(() => { endSenderLibrary(); resetRevokeFlights(); resetWalletApproval(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -219,22 +219,20 @@ describe("TC-1423 library rows: audience and kind", () => {
 });
 
 describe("TC-1423/TC-1583 revoke confirmation copy", () => {
-  it("for a link: cuts off whoever it was passed to, says the stored copy stays, and warns that a link holder can revoke", async () => {
+  it("for a link: cuts off whoever it was passed to and says the stored copy stays", async () => {
     const { root } = await mount([bearer("a", "a.md")], undefined);
     root.querySelector<HTMLButtonElement>(".sender-revoke")!.click();
     const text = root.querySelector(".sender-confirm-dialog")?.textContent ?? "";
     expect(text).toContain("Everyone who has the link loses access right away, including anyone they passed it to");
     expect(text).toContain(REVOKE_CONFIRM_STORED);
-    expect(text).toContain(REVOKE_CONFIRM_CAVEAT);
     expect(text).toContain("Share can't delete it yet");
     expect(text).not.toMatch(/\b(?:node|space|delegation|capabilit)/i);
   });
 
-  it("for a named recipient: no link-holder warning, still says the stored copy stays", async () => {
+  it("for a named recipient: stored copy stays without pass-on wording", async () => {
     const { root } = await mount([addressed("p")], undefined);
     root.querySelector<HTMLButtonElement>(".sender-revoke")!.click();
     const text = root.querySelector(".sender-confirm-dialog")?.textContent ?? "";
-    expect(text).not.toContain(REVOKE_CONFIRM_CAVEAT);
     // A named recipient cannot pass the share on, so the copy must not say anyone they passed it to loses access.
     expect(text).not.toContain("passed it to");
     expect(text).toContain(REVOKE_CONFIRM_STORED);
