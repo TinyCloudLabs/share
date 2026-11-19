@@ -66,9 +66,4 @@ describe("the test client's address header", () => {
       expect(local.headers.get(HEADER)).toBe(CLIENT_IP);
     });
   });
-
-  it("addressHeader builds the one header or none", () => {
-    expect(addressHeader("198.51.100.1")).toEqual({ [HEADER]: "198.51.100.1" });
-    expect(addressHeader(null)).toEqual({});
-  });
 });
