@@ -23,7 +23,7 @@ const WALLET = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const RECIPIENT_WALLET = privateKeyToAccount(`0x${"66".repeat(32)}`);
 const CANONICAL = Object.freeze({
   share: "https://share.tinycloud.xyz",
-  node: "https://tee.node.tinycloud.xyz",
+  node: "https://node.tinycloud.xyz",
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
 });
