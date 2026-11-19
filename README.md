@@ -13,6 +13,10 @@ TinyCloud Sharing is the browser UX for TinyCloud's native delegation and invoca
 
 See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the protocol boundaries, [docs/html-artifact-sharing.md](docs/html-artifact-sharing.md) and [docs/jsx-artifact-sharing.md](docs/jsx-artifact-sharing.md) for artifact rendering, and [docs/user-content-origin.md](docs/user-content-origin.md) for serving the sandbox documents from a separate origin.
 
+## Shared by me pagination
+
+Shared by me loads the next page once and hides Load more after the final share. Retrying a later page keeps the shares already displayed and resumes that page; TinyCloud status checks are reported separately. Details: TC-1740
+
 ## Development
 
 `npm install`, then use `npm run dev`, `npm test`, `npm run typecheck`, and `npm run build`.

@@ -134,7 +134,12 @@ test("watchSignatures counts completed OpenKey sign calls by the step they start
     let step = "first"; let clock = 0;
     const calls = watchSignatures(page, { calls: {}, step: () => step, at: () => ++clock });
     await page.goto("https://example.test/");
-    const call = (url, method = "POST") => page.evaluate((u, m) => fetch(u, { method: m, headers: { "content-type": "text/plain" }, body: m === "POST" ? "{}" : undefined }).then(() => true, () => false), url, method);
+    const call = async (url, method = "POST") => {
+      const response = page.waitForResponse((reply) => reply.url() === url && reply.request().method() === method);
+      const result = await page.evaluate((u, m) => fetch(u, { method: m, headers: { "content-type": "text/plain" }, body: m === "POST" ? "{}" : undefined }).then(() => true, () => false), url, method);
+      await (await response).buffer();
+      return result;
+    };
 
     await call("https://api.openkey.so/api/keys/k1/sign");
     await call("https://openkey.so/api/delegate/authorize-sign");
