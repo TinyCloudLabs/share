@@ -22,7 +22,7 @@ describe("the /courier route", () => {
   it("serves the same policy in the page and in the header, the header adding only frame-ancestors", () => {
     expect(metaPolicy).not.toBe("");
     for (const route of ["/courier", "/courier/"]) {
-      expect(headerPolicy(route)).toBe(`${metaPolicy}; frame-ancestors 'none'`);
+      expect(headerPolicy(route)).toBe(`${metaPolicy}; frame-ancestors https://tinycloud.one`);
       // the site-wide policy is detached, so only this one is sent
       expect(headers.split(/\n\n+/).find((section) => section.startsWith(`${route}\n`))).toContain("! Content-Security-Policy");
     }

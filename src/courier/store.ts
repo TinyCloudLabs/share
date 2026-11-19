@@ -164,8 +164,9 @@ export function createKvStore(kv: CourierKv, options: KvStoreOptions = {}): Cour
         throw new StoreError(failureOf(result.error));
       }
       const value = result.data.data;
-      const text = typeof value === "string" ? value : value instanceof Uint8Array ? new TextDecoder().decode(value) : undefined;
-      if (text === undefined) throw new StoreError("failed");
+      // kv.get hands back a value that looks like JSON already parsed (an object, number or boolean); orders are Markdown that can look like JSON.
+      if (value === undefined || value === null) throw new StoreError("failed");
+      const text = typeof value === "string" ? value : value instanceof Uint8Array ? new TextDecoder().decode(value) : JSON.stringify(value);
       const etag = result.data.headers.etag;
       return { text, etag: typeof etag === "string" ? etag : undefined };
     },

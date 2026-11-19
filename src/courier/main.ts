@@ -2,6 +2,7 @@ import "../email-share/sender.css";
 import "./courier.css";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
 import { mountCourier } from "./app.js";
+import { connectEmbedded, type EmbeddedCourier } from "./embedded.js";
 import type { SignInProgress } from "./session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
@@ -23,10 +24,15 @@ async function renderBody(host: HTMLElement, markdown: string, label: string): P
   }
 }
 
+const embedded = connectEmbedded(window);
+const embeddedDeps = (): { embedded?: EmbeddedCourier } => (embedded === null ? {} : { embedded });
+
 const root = document.querySelector<HTMLElement>("#courier-root");
 if (root !== null) {
   mountCourier(root, {
     renderBody: (host, markdown, label) => { void renderBody(host, markdown, label); },
+    // Null outside One's frame (or under any other parent): the page then runs exactly as before.
+    ...embeddedDeps(),
     signIn: async (progress: SignInProgress) => {
       // OpenKey and the Web SDK load on the click, not with the page.
       const [{ loadSharePublicConfig }, { signInToCourier }] = await Promise.all([import("../email-share/config.js"), import("./session.js")]);

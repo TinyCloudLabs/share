@@ -66,7 +66,7 @@ describe("built viewer and the user-content origin", () => {
     }
     for (const route of ["/courier", "/courier/"]) {
       const section = headers.split(/\n\n+/).find((candidate) => candidate.startsWith(`${route}\n`)) ?? "";
-      expect(section, route).toContain(`Content-Security-Policy: ${courierMeta}; frame-ancestors 'none'`);
+      expect(section, route).toContain(`Content-Security-Policy: ${courierMeta}; frame-ancestors https://tinycloud.one`);
     }
   }, 180_000);
 
