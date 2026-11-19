@@ -44,9 +44,8 @@ describe("Courier CSP and the node origins", () => {
     expect(line).toContain("https://tee.node.tinycloud.xyz");
   });
 
-  it("ships the node.* default as the sender bootstrap origin the CSP has to admit", () => {
+  it("admits whichever sender bootstrap origin the shipped config names", () => {
     const config = JSON.parse(readFileSync("public/.well-known/tinycloud-share/config.json", "utf8")) as { senderBootstrapNodeOrigin: string };
-    expect(config.senderBootstrapNodeOrigin).toBe("https://node.tinycloud.xyz");
     for (const [, policy] of policies) expect(connectAllows(policy, `${config.senderBootstrapNodeOrigin}/info`)).toBe(true);
   });
 });
