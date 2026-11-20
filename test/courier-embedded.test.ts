@@ -155,6 +155,17 @@ describe("embedded connection", () => {
     expect(run.posted).toHaveLength(2);
   });
 
+  it("asks once for exactly the courier scope when One holds nothing yet (an empty grant)", async () => {
+    const run = frame(mailbox());
+    mountCourier(root, { embedded: run.embedded!, embeddedWaitMs: 5_000, signIn: () => Promise.reject(new Error("no")), renderBody: () => undefined, now: () => NOW });
+    await vi.waitFor(() => expect(run.posted).toHaveLength(1));
+    run.deliver({ ...run.grantFor(run.nonceOf(0)), grants: [] });
+    await vi.waitFor(() => expect(run.posted).toHaveLength(2));
+    expect(run.posted[1]?.message).toMatchObject({ type: "tc-embed/request", permissions: COURIER_EMBED_SCOPE });
+    expect(run.posted[1]?.targetOrigin).toBe(ONE);
+    expect(run.used).toHaveLength(0);
+  });
+
   it("a refused read (401) asks One once, and a denial returns the existing signed-out state", async () => {
     const run = frame(mailbox(), { refuse: true });
     await mount(run);
