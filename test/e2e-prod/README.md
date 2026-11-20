@@ -210,6 +210,16 @@ it.
 pull requests (candidate), after each production deploy, and daily. OpenKey's
 release checks run the same script against production Share.
 
+On a production push, the workflow waits for a completed success from
+Cloudflare's app (`85455`), named exactly `Cloudflare Pages: share`, on the
+requested commit SHA. `share-usercontent`, other apps and other SHAs cannot
+satisfy or reject this gate. All attempts are fetched with `filter=all` and
+pagination; incomplete results fail closed. Cancelled or unfinished duplicates
+do not reject an existing success, but any other completed non-success attempt
+does, including older attempts. Without a success the existing 20-minute polling
+limit still applies. The merge-gate workflow runs the helper's unit tests with
+`node --test .github/scripts/pages-check-state.test.mjs`.
+
 The click logic (`approval-click.mjs`) is unit tested by
 `npm run test:e2e:production-origin-contract`, partly on a real page, so that
 command needs Puppeteer's Chrome (`npm ci` downloads it unless
