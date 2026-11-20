@@ -95,7 +95,8 @@ function isTheme(value: unknown): value is EmbedTheme {
 }
 
 function parseSpaceGrants(value: unknown): SpaceGrant[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
+  // An empty list is One's "holds nothing for this app yet": the page then asks with a request.
+  if (!Array.isArray(value)) return null;
   const grants: SpaceGrant[] = [];
   for (const entry of value) {
     if (!isRecord(entry) || typeof entry["spaceId"] !== "string" || entry["spaceId"] === "" || typeof entry["cid"] !== "string" || entry["cid"] === "" || entry["delegation"] === undefined || entry["delegation"] === null) return null;

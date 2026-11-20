@@ -137,10 +137,18 @@ describe("the controller", () => {
     run.controller?.hello("did:key:z6Mkabc");
     run.deliver(run.grantMessage("nonce-1", NOW));
     run.deliver({ ...run.grantMessage("nonce-1"), expiresAt: "soon" });
-    run.deliver({ ...run.grantMessage("nonce-1"), grants: [] });
+    run.deliver({ ...run.grantMessage("nonce-1"), grants: "none" });
     run.deliver({ ...run.grantMessage("nonce-1"), grants: [{ spaceId: "s", cid: "c" }] });
     run.deliver({ ...run.grantMessage("nonce-1"), v: 2 });
     expect(run.calls).toEqual([]);
+  });
+
+  it("accepts an empty grants list: One holds nothing for the app yet", () => {
+    const run = setup();
+    run.controller?.hello("did:key:z6Mkabc");
+    run.deliver({ ...run.grantMessage("nonce-1"), grants: [] });
+    expect(run.calls).toEqual(["grant", "theme:dark"]);
+    expect(run.grants[0]?.grants).toEqual([]);
   });
 
   it("ignores denied and theme messages from a foreign origin or window; denied needs the latest nonce", () => {
