@@ -23,6 +23,8 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Test the Pages deployment gate
+        run: node --test .github/scripts/pages-check-state.test.mjs
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
