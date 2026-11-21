@@ -204,7 +204,7 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   } catch (error) {
     if (error instanceof NetworkSetupDeclinedError) {
       // Declined: this is a sign-in that did not complete, so a reload shows a clean first sign-in.
-      // Residual, accepted: if the owner left renewal on, OpenKey keeps that renewal (share/ decrypt) for a session key this
+      // If the owner left renewal on, OpenKey keeps that renewal (share/ decrypt) for a session key this
       // device has now forgotten, as after an unconfirmed Sign out. Stopping it needs OpenKey's confirm window, so it is not
       // asked here; it ends at its limit or under Renewing permissions in OpenKey settings.
       await endSessionHere(tinycloud);
