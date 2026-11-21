@@ -3,8 +3,7 @@
  * history store and the two views are replaced) and drives the sign-in wall and the composer's save step.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NETWORK_SETUP } from "../src/share/history-copy.js";
-import { SENDER_FAILURE } from "../src/share/sender-failure.js";
+import { NETWORK_SETUP, NETWORK_SETUP_DECLINED } from "../src/share/history-copy.js";
 
 interface ComposerOptions { readonly persistShare: (input: { readonly share: { readonly record: unknown } }) => Promise<void> }
 
@@ -101,7 +100,7 @@ describe("the first link, by account", () => {
     state.networkExists = false;
     state.approve = false;
     await signIn();
-    await vi.waitFor(() => expect(document.querySelector(".auth-status")?.textContent).toBe(SENDER_FAILURE.signIn));
+    await vi.waitFor(() => expect(document.querySelector(".auth-status")?.textContent).toBe(NETWORK_SETUP_DECLINED));
     expect(state.order).toEqual(["lookup", "request"]);
     expect(state.composer).toBeUndefined();
     expect(state.libraryMounts).toBe(0);

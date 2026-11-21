@@ -1,13 +1,8 @@
 import { defaultEncryptionNetworkForOwner } from "@tinycloud/share-sdk";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { NETWORK_SETUP } from "./history-copy.js";
+import { NetworkSetupDeclinedError } from "./network-setup-declined.js";
 import { requestInOpenKey } from "./permission-step-up.js";
-
-/** The person did not approve the one-time setup. Reads as a sign-in that did not complete. */
-export class NetworkSetupDeclinedError extends Error {
-  readonly kind = "signIn" as const;
-  constructor() { super("network-setup-declined"); }
-}
 
 export interface NetworkSetup {
   /** Resolves once the account's encryption network exists. Asks nothing when it already does; once per session. */

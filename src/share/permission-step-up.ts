@@ -1,5 +1,5 @@
 import type { PermissionEntry } from "@tinycloud/web-sdk";
-import type { ShareTinyCloud } from "./openkey-session.js";
+import { takeWalletApprovalFailure, type ShareTinyCloud } from "./openkey-session.js";
 
 /**
  * Asks OpenKey for access beyond what the library signed in with. Share signs in with the SDK's own windows turned off,
@@ -18,6 +18,11 @@ export async function requestInOpenKey(
   if (!Reflect.set(tinycloud, "_testHooks", { ...hooks, showModal: async () => ({ approved: true }) })) {
     throw new Error("permission-request-unavailable");
   }
-  const result = await tinycloud.requestPermissions(permissions, options);
-  return result.approved;
+  try {
+    return (await tinycloud.requestPermissions(permissions, options)).approved;
+  } catch (error) {
+    // OpenKey ends a cancelled approval by rejecting; that is the person saying no, not a failure.
+    if (takeWalletApprovalFailure(tinycloud) === "cancelled") return false;
+    throw error;
+  }
 }

@@ -201,7 +201,7 @@ export function registerWalletApprovalObserver(tinycloud: ShareTinyCloud, provid
   approvalObservers.set(tinycloud, provider);
 }
 
-export function takeWalletApprovalFailure(tinycloud: ShareTinyCloud): WalletApprovalFailure | undefined {
+export function takeWalletApprovalFailure(tinycloud: object): WalletApprovalFailure | undefined {
   return approvalObservers.get(tinycloud)?.takeFailure();
 }
 

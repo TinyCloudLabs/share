@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultEncryptionNetworkForOwner } from "@tinycloud/share-sdk";
-import { createNetworkSetup, NetworkSetupDeclinedError } from "../src/share/network-setup.js";
+import { createNetworkSetup } from "../src/share/network-setup.js";
+import { NetworkSetupDeclinedError } from "../src/share/network-setup-declined.js";
 import { NETWORK_SETUP } from "../src/share/history-copy.js";
 import { senderFailureMessage, SENDER_FAILURE } from "../src/share/sender-failure.js";
 

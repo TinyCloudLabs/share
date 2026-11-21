@@ -10,6 +10,8 @@ import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
 import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
+import { NETWORK_SETUP_DECLINED } from "./history-copy.js";
+import { NetworkSetupDeclinedError } from "./network-setup-declined.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -80,7 +82,9 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
         // message reaches the wall.
         console.debug("tinycloud share: sign-in failed");
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
-        status.textContent = authFailureMessage(error);
+        const declined = error instanceof NetworkSetupDeclinedError;
+        status.textContent = declined ? NETWORK_SETUP_DECLINED : authFailureMessage(error);
+        if (declined) submit.textContent = "Continue with OpenKey";
         submit.hidden = false;
         submit.disabled = false;
         if (resumable) {
@@ -161,7 +165,7 @@ window.addEventListener("hashchange", render);
 
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
   status.textContent = "Connecting to your encrypted TinyCloud…";
-  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { createNetworkSetup, NetworkSetupDeclinedError }, { historyLock }] = await Promise.all([
+  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { createNetworkSetup }, { historyLock }] = await Promise.all([
     import("../email-share/config.js"),
     import("./openkey-session.js"),
     import("./sender-history.js"),
@@ -181,8 +185,14 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   try {
     await networkSetup.ensure();
   } catch (error) {
-    // Declined is a sign-in that did not complete. Anything else (the node not answering) leaves the library to show its own state, and the first save asks again.
-    if (error instanceof NetworkSetupDeclinedError) throw error;
+    if (error instanceof NetworkSetupDeclinedError) {
+      // Declined: this is a sign-in that did not complete. End the session on this device the way Sign out does, locally and first
+      // (the client's session key and the saved session, then the remembered account), so a reload shows a clean first sign-in.
+      try { await tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, as for Sign out. */ }
+      forgetLibraryAccount();
+      throw error;
+    }
+    // Anything else (the node not answering) leaves the library to show its own state, and the first save asks again.
   }
   app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), historyLock: historyLock(tinycloud, session), networkSetup, config };
   const chromeScope = document.createElement("div");
