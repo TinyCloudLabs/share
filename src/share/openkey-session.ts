@@ -1,3 +1,4 @@
+import { Buffer } from "buffer";
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { authorizationVerdictOf, EXPIRY, extractRecapAttenuations, unauthorizedRecapCapabilities, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import type { OpenKeyAuthorizeTinyCloud } from "@tinycloud/node-sdk/core";
@@ -280,6 +281,10 @@ export const MAX_SESSION_MS = 60 * 60 * 1000;
 export const SIGN_IN_SESSION_MS = EXPIRY.SESSION_MS;
 const DEFAULT_APP_NAME = "TinyCloud Share";
 const DEFAULT_SESSION_PREFIX = "tinycloud-share";
+// The TinyCloud SDKs read a SIWE message's recap with Node's `Buffer` (`extractRecapAttenuations`), which a browser lacks: without it the
+// versioned sign-in fails after OpenKey approves ("Buffer is not defined"). Set before any sign-in runs.
+globalThis.Buffer ??= Buffer;
+
 const REGISTRY_SYNC_WAIT_MS = 15_000;
 
 export interface SignInWithManifestOptions extends ManifestScope {
