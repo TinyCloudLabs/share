@@ -11,7 +11,7 @@ beforeEach(() => { observed.failure = undefined; });
 describe("a cancelled OpenKey approval", () => {
   it("is a no, not an error, when OpenKey says the person cancelled", async () => {
     observed.failure = "cancelled";
-    const tinycloud = { requestPermissions: vi.fn(async () => { throw { code: "USER_CANCELLED" }; }) };
+    const tinycloud = { requestPermissions: vi.fn(async () => { throw { code: "USER_CANCELLED" }; }), hasPermissions: vi.fn(() => false) };
     await expect(requestInOpenKey(tinycloud as never, PERMISSIONS)).resolves.toBe(false);
   });
 

@@ -1,5 +1,5 @@
 import { copyWithFallback } from "./clipboard.js";
-import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
+import { HistoryLockedError, importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
 import { takeWalletApprovalFailure, type OpenKeyShareSession, type ShareTinyCloud } from "./openkey-session.js";
 import { revokeShare, ShareRevocationIncompleteError, type SenderShareRecord, type ShareRevocationResult } from "@tinycloud/share-sdk";
 import { revokePolicyRootV3 } from "@tinycloud/sdk-core";
@@ -191,14 +191,33 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     for (let index = 0; index < 4; index += 1) { const skeleton = node(doc, "tr", "sender-skeleton-row"); for (let column = 0; column < 6; column += 1) skeleton.append(node(doc, "td", "sender-skeleton-cell", "Loading")); body.append(skeleton); }
   };
   const unlockedNow = (): boolean => options.historyLock === undefined || options.historyLock.isUnlocked();
-  /** The list is not shown and nothing is read: the lock panel stands alone. */
+  let lapseTimer: number | undefined;
+  /** The list is not shown and nothing is read: the lock panel stands alone. The ids read under the grant are dropped. */
   const showLocked = (): void => {
+    window.clearTimeout(lapseTimer);
+    options.history.forgetIndex();
     announcer.clear();
     body.replaceChildren(); rows.clear(); pageRows.length = 0; cursor = undefined;
     table.hidden = true; empty.hidden = true; more.hidden = true; error.hidden = true; recheck.hidden = true; freshness.hidden = true;
     table.removeAttribute("aria-busy"); live.textContent = "";
     locked.hidden = false; say(HISTORY_LOCKED);
   };
+  /** The grant ends at a known time: the lock shows then, without waiting for a click. */
+  const scheduleLapse = (ms: number): void => {
+    window.clearTimeout(lapseTimer);
+    lapseTimer = window.setTimeout(() => {
+      if (scope.signal.aborted) return;
+      // The SDK ends the grant on its own clock, which can be a moment after this one: look again shortly.
+      if (unlockedNow()) { scheduleLapse(1_000); return; }
+      showLocked();
+    }, ms);
+  };
+  const armLapse = (): void => {
+    window.clearTimeout(lapseTimer);
+    const lapsesAt = options.historyLock?.lapsesAt();
+    if (lapsesAt !== undefined && unlockedNow()) scheduleLapse(Math.max(0, lapsesAt - Date.now()));
+  };
+  scope.signal.addEventListener("abort", () => window.clearTimeout(lapseTimer), { once: true });
   /** Every action that reads a saved share goes through this: once the grant has ended the lock shows again and nothing is read. */
   const stillUnlocked = (): boolean => { if (unlockedNow()) return true; showLocked(); return false; };
   const openImport = (): void => {
@@ -522,7 +541,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       page.items.forEach(renderItem); cursor = page.nextCursor; more.hidden = !page.truncated; if (page.items.length > 0) live.textContent = append ? `${page.items.length} more shares loaded.` : `${page.items.length} shares loaded.`;
       if (page.items.length > 0) void checkStatus();
     } catch (caught) {
-      if (!unlockedNow()) { showLocked(); return; }
+      if (caught instanceof HistoryLockedError || !unlockedNow()) { showLocked(); return; }
       if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudSenderHistoryError?: string }).__tinycloudSenderHistoryError = caught instanceof Error ? caught.message : String(caught);
       if (!append && initialLoadRetries < 3) {
         initialLoadRetries += 1; retryScheduled = true;
@@ -544,7 +563,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     if (unlocking || options.historyLock === undefined) return;
     unlocking = true; unlockButton.disabled = true;
     // Not approved, or the OpenKey window was closed: the list stays locked and the button stays.
-    void options.historyLock.unlock().then((granted) => { if (granted && !scope.signal.aborted) { locked.hidden = true; void load(false); } }).catch(() => undefined).finally(() => { unlocking = false; unlockButton.disabled = false; });
+    void options.historyLock.unlock().then((granted) => { if (granted && !scope.signal.aborted) { locked.hidden = true; armLapse(); void load(false); } }).catch(() => undefined).finally(() => { unlocking = false; unlockButton.disabled = false; });
   });
   // A revoke made on the account site or the CLI while this tab was in the background shows up when the sender comes back.
   const onReturn = (): void => {
@@ -554,6 +573,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   };
   window.addEventListener("focus", onReturn, { signal: scope.signal });
   doc.addEventListener("visibilitychange", onReturn, { signal: scope.signal });
+  armLapse();
   void load(false);
 }
 

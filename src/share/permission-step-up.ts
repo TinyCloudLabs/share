@@ -5,10 +5,11 @@ import { takeWalletApprovalFailure, type ShareTinyCloud } from "./openkey-sessio
  * Asks OpenKey for access beyond what the library signed in with. Share signs in with the SDK's own windows turned off,
  * so the SDK's "requests additional access" question has no window to show. The person has already pressed the button
  * that leads here (or is being told what is happening in the status line), so that question is answered as approved and
- * OpenKey's own screen is where the approval is given. Resolves false when OpenKey does not grant it.
+ * OpenKey's own screen is where the approval is given. The SDK's handler is put back as it was once the request ends.
+ * Resolves false when OpenKey does not grant it.
  */
 export async function requestInOpenKey(
-  tinycloud: Pick<ShareTinyCloud, "requestPermissions">,
+  tinycloud: Pick<ShareTinyCloud, "requestPermissions" | "hasPermissions">,
   permissions: PermissionEntry[],
   options?: { readonly expiryMs?: number },
 ): Promise<boolean> {
@@ -21,8 +22,11 @@ export async function requestInOpenKey(
   try {
     return (await tinycloud.requestPermissions(permissions, options)).approved;
   } catch (error) {
-    // OpenKey ends a cancelled approval by rejecting; that is the person saying no, not a failure.
-    if (takeWalletApprovalFailure(tinycloud) === "cancelled") return false;
+    // OpenKey ends a cancelled approval by rejecting; that is the person saying no, not a failure. A grant the SDK had
+    // already activated before the rejection is still held, and is reported as held.
+    if (takeWalletApprovalFailure(tinycloud) === "cancelled") return tinycloud.hasPermissions(permissions);
     throw error;
+  } finally {
+    Reflect.set(tinycloud, "_testHooks", previous);
   }
 }

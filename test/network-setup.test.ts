@@ -37,7 +37,7 @@ describe("the one-time encryption setup", () => {
     await setup.ensure();
     expect(onStatus).toHaveBeenCalledExactlyOnceWith(NETWORK_SETUP);
     expect(tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
-    expect(tinycloud.requestPermissions).toHaveBeenCalledWith([{ service: "tinycloud.encryption", path: NETWORK_ID, actions: ["network.create"], skipPrefix: true }], undefined);
+    expect(tinycloud.requestPermissions).toHaveBeenCalledWith([{ service: "tinycloud.encryption", path: NETWORK_ID, actions: ["network.create"], skipPrefix: true }], { expiryMs: 600_000 });
     expect(tinycloud.ensureEncryptionNetwork).toHaveBeenCalledExactlyOnceWith(NETWORK_ID);
     expect(tinycloud.calls.order).toEqual(["get", "request", "ensure"]);
   });

@@ -12,6 +12,7 @@ import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
 import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
 import { NETWORK_SETUP_DECLINED } from "./history-copy.js";
 import { NetworkSetupDeclinedError } from "./network-setup-declined.js";
+import { StaleSessionError } from "./stale-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -83,8 +84,12 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
         console.debug("tinycloud share: sign-in failed");
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
         const declined = error instanceof NetworkSetupDeclinedError;
-        status.textContent = declined ? NETWORK_SETUP_DECLINED : authFailureMessage(error);
-        if (declined) submit.textContent = "Continue with OpenKey";
+        // Either way this device is already signed out: a resumed wall ("Welcome back") starts over as a first sign-in.
+        if ((declined || error instanceof StaleSessionError) && resumable) {
+          mountAuthentication(root, undefined, proceed, declined ? NETWORK_SETUP_DECLINED : undefined);
+          return;
+        }
+        status.textContent = declined ? NETWORK_SETUP_DECLINED : error instanceof StaleSessionError ? "" : authFailureMessage(error);
         submit.hidden = false;
         submit.disabled = false;
         if (resumable) {
@@ -163,9 +168,15 @@ function render(): void {
 
 window.addEventListener("hashchange", render);
 
+/** Ends the session on this device the way Sign out does, locally and first: the client's session key and the saved session, then the remembered account. OpenKey is not contacted. */
+async function endSessionHere(tinycloud: ShareTinyCloud): Promise<void> {
+  try { await tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`. */ }
+  forgetLibraryAccount();
+}
+
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
   status.textContent = "Connecting to your encrypted TinyCloud…";
-  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { createNetworkSetup }, { historyLock }] = await Promise.all([
+  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { createNetworkSetup }, { historyLock, holdsWholeNetworkAccess }] = await Promise.all([
     import("../email-share/config.js"),
     import("./openkey-session.js"),
     import("./sender-history.js"),
@@ -174,6 +185,12 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   ]);
   const config = await loadSharePublicConfig();
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
+  // A session saved before Share stopped asking for the whole encryption network still holds it, and the SDK restores it as is.
+  // It is not kept: this device is signed out and the person signs in again, which asks for the current set only.
+  if (holdsWholeNetworkAccess(tinycloud, session.address)) {
+    await endSessionHere(tinycloud);
+    throw new StaleSessionError();
+  }
   // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
   status.textContent = "Signed in. Loading your shares…";
   // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
@@ -186,10 +203,8 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     await networkSetup.ensure();
   } catch (error) {
     if (error instanceof NetworkSetupDeclinedError) {
-      // Declined: this is a sign-in that did not complete. End the session on this device the way Sign out does, locally and first
-      // (the client's session key and the saved session, then the remembered account), so a reload shows a clean first sign-in.
-      try { await tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, as for Sign out. */ }
-      forgetLibraryAccount();
+      // Declined: this is a sign-in that did not complete, so a reload shows a clean first sign-in.
+      await endSessionHere(tinycloud);
       throw error;
     }
     // Anything else (the node not answering) leaves the library to show its own state, and the first save asks again.

@@ -9,7 +9,10 @@ export interface NetworkSetup {
   ensure(): Promise<void>;
 }
 
-type SetupClient = Pick<ShareTinyCloud, "getEncryptionNetwork" | "ensureEncryptionNetwork" | "requestPermissions">;
+/** The one-time setup needs its approval for the moment only: ten minutes, not the SDK's 30-day default. */
+const NETWORK_SETUP_GRANT_MS = 600_000;
+
+type SetupClient = Pick<ShareTinyCloud, "getEncryptionNetwork" | "ensureEncryptionNetwork" | "requestPermissions" | "hasPermissions">;
 
 export function createNetworkSetup(tinycloud: SetupClient, session: Pick<OpenKeyShareSession, "address">, onStatus: (message: string) => void = () => undefined): NetworkSetup {
   let ready = false;
@@ -18,7 +21,7 @@ export function createNetworkSetup(tinycloud: SetupClient, session: Pick<OpenKey
     const networkId = defaultEncryptionNetworkForOwner({ address: session.address });
     if (await tinycloud.getEncryptionNetwork(networkId) === null) {
       onStatus(NETWORK_SETUP);
-      const approved = await requestInOpenKey(tinycloud, [{ service: "tinycloud.encryption", path: networkId, actions: ["network.create"], skipPrefix: true }]);
+      const approved = await requestInOpenKey(tinycloud, [{ service: "tinycloud.encryption", path: networkId, actions: ["network.create"], skipPrefix: true }], { expiryMs: NETWORK_SETUP_GRANT_MS });
       if (!approved) throw new NetworkSetupDeclinedError();
       // The same id the grant names.
       await tinycloud.ensureEncryptionNetwork(networkId);
