@@ -15,15 +15,40 @@ if (pages.some((page) => checks.length < page.total_count)) {
   throw new Error('Incomplete check-run response');
 }
 
-let state = 'pending';
-for (const check of checks) {
-  // GitHub's Cloudflare Workers and Pages app; another app cannot satisfy the gate.
-  if (check.app?.id !== 85455 || check.name !== 'Cloudflare Pages: share' || check.head_sha !== sha) continue;
-  if (check.status !== 'completed' || check.conclusion === 'cancelled') continue;
-  if (check.conclusion !== 'success') {
-    state = 'failure';
-    break;
+// Production unit: previews share the app, project and SHA, but cannot authorize it.
+const attempts = checks.filter((check) =>
+  check.app?.id === 85455 && check.name === 'Cloudflare Pages: share' &&
+  check.head_sha === sha && check.conclusion !== 'cancelled' &&
+  !(check.status === 'completed' && /Branch Preview URL/.test(check.output?.summary ?? ''))
+);
+const ids = new Set();
+let newestCompleted;
+let newestUnfinished;
+for (const check of attempts) {
+  if (!Number.isSafeInteger(check.id) || check.id <= 0) {
+    throw new Error(`Invalid check-run id: ${check.id}`);
   }
+  if (ids.has(check.id)) throw new Error(`Duplicate check-run id: ${check.id}`);
+  ids.add(check.id);
+  // GitHub IDs order creation; a late-finishing older attempt cannot win.
+  if (check.status === 'completed') {
+    if (!newestCompleted || check.id > newestCompleted.id) newestCompleted = check;
+  } else if (!newestUnfinished || check.id > newestUnfinished.id) {
+    newestUnfinished = check;
+  }
+}
+
+const newestId = Math.max(newestCompleted?.id ?? 0, newestUnfinished?.id ?? 0);
+for (const check of attempts) {
+  if (check.status === 'completed' && check.conclusion !== 'success' && check.id < newestId) {
+    console.error(`Superseded check-run id=${check.id} conclusion=${check.conclusion}`);
+  }
+}
+
+let state = 'pending';
+if (newestCompleted?.conclusion === 'success') {
   state = 'success';
+} else if (newestCompleted && (!newestUnfinished || newestUnfinished.id < newestCompleted.id)) {
+  state = 'failure';
 }
 console.log(state);

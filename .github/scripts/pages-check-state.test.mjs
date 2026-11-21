@@ -7,7 +7,9 @@ const script = fileURLToPath(new URL('./pages-check-state.mjs', import.meta.url)
 const sha = 'a'.repeat(40);
 const otherSha = 'b'.repeat(40);
 const requiredName = 'Cloudflare Pages: share';
+let nextId = 1000;
 const check = (overrides = {}) => ({
+  id: nextId++,
   name: requiredName,
   app: { id: 85455 },
   head_sha: sha,
@@ -49,9 +51,18 @@ test('a completed success is required, not merely an empty or unfinished set', (
 });
 
 for (const conclusion of ['failure', 'timed_out', 'action_required', 'startup_failure', 'stale', 'neutral', 'skipped']) {
-  test(`${conclusion} blocks success even on an older paginated attempt`, () => {
-    assert.equal(state([page([check()], 2), page([check({ conclusion })], 2)]), 'failure');
-    assert.equal(state([page([check({ conclusion }), check()])]), 'failure');
+  test(`${conclusion} on an older attempt does not veto a newer success`, () => {
+    const older = check({ id: 1001, conclusion });
+    const newer = check({ id: 1002 });
+    assert.equal(state([page([newer], 2), page([older], 2)]), 'success');
+    assert.equal(state([page([older], 2), page([newer], 2)]), 'success');
+    assert.equal(state([page([older, newer])]), 'success');
+  });
+  test(`the newest completed ${conclusion} refuses an older success`, () => {
+    const older = check({ id: 1001 });
+    const newer = check({ id: 1002, conclusion });
+    assert.equal(state([page([older], 2), page([newer], 2)]), 'failure');
+    assert.equal(state([page([newer, older])]), 'failure');
   });
 }
 
@@ -77,4 +88,159 @@ test('an incomplete response cannot hide an older failure behind a success', () 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Incomplete check-run response/);
   }
+});
+
+test('creation IDs, not completion timestamps or page order, select the newest attempt', () => {
+  const older = check({ id: 2001, conclusion: 'failure', completed_at: '2026-11-20T12:00:00Z' });
+  const newer = check({ id: 2002, completed_at: '2026-11-20T11:00:00Z' });
+  assert.equal(state([page([older], 2), page([newer], 2)]), 'success');
+  assert.equal(state([page([newer, older])]), 'success');
+  assert.equal(state([page([
+    { ...older, conclusion: 'success' },
+    { ...newer, conclusion: 'failure' },
+  ])]), 'failure');
+});
+
+test('a newer unfinished attempt defers a completed failure until it finishes', () => {
+  const older = check({ id: 3001, conclusion: 'failure' });
+  const newer = check({ id: 3002, status: 'in_progress', conclusion: null });
+  assert.equal(state([page([newer], 2), page([older], 2)]), 'pending');
+  assert.equal(state([page([older, newer])]), 'pending');
+  assert.equal(state([page([older, { ...newer, status: 'completed', conclusion: 'success' }])]), 'success');
+  assert.equal(state([page([older, { ...newer, status: 'completed', conclusion: 'timed_out' }])]), 'failure');
+  assert.equal(state([page([{ ...newer, id: 3000 }, older])]), 'failure');
+});
+
+test('unfinished checks for another SHA, name or app cannot defer failure', () => {
+  for (const overrides of [
+    { head_sha: otherSha },
+    { name: `${requiredName}-other` },
+    { app: { id: 1 } },
+  ]) {
+    assert.equal(state([page([
+      check({ id: 4001, conclusion: 'failure' }),
+      check({ id: 4002, status: 'queued', conclusion: null, ...overrides }),
+    ])]), 'failure');
+  }
+});
+
+test('cancelled attempts neither supersede failure nor provide a completed decision', () => {
+  assert.equal(state([page([
+    check({ id: 5001, conclusion: 'failure' }),
+    check({ id: 5002, conclusion: 'cancelled' }),
+  ])]), 'failure');
+  assert.equal(state([page([
+    check({ id: 5001, conclusion: 'cancelled' }),
+    check({ id: 5002, status: 'queued', conclusion: null }),
+  ])]), 'pending');
+});
+
+test('missing, noninteger, unsafe or nonpositive IDs fail closed for matching attempts', () => {
+  for (const id of [undefined, null, '6002', 6002.5, 0, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const status of ['completed', 'in_progress']) {
+      const result = run([page([
+        check({ id: 6001 }),
+        check({ id, status, conclusion: status === 'completed' ? 'success' : null }),
+      ])]);
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /Invalid check-run id/);
+    }
+  }
+});
+
+test('tied IDs fail closed even across pages or for unfinished attempts', () => {
+  for (const status of ['completed', 'in_progress']) {
+    const result = run([
+      page([check({ id: 7001 })], 2),
+      page([check({ id: 7001, status, conclusion: status === 'completed' ? 'failure' : null })], 2),
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Duplicate check-run id: 7001/);
+  }
+});
+
+test('cancelled and unrelated attempts do not participate in ID validation', () => {
+  assert.equal(state([page([
+    check({ id: 8001 }),
+    check({ id: 8001, conclusion: 'cancelled' }),
+    check({ id: undefined, conclusion: 'cancelled' }),
+    check({ id: undefined, head_sha: otherSha, conclusion: 'failure' }),
+    check({ id: undefined, name: `${requiredName}-other`, conclusion: 'failure' }),
+    check({ id: undefined, app: { id: 1 }, conclusion: 'failure' }),
+  ])]), 'success');
+});
+
+test('every superseded completed non-success is logged on stderr only', () => {
+  const conclusions = ['failure', 'timed_out', 'action_required', 'startup_failure', 'stale', 'neutral', 'skipped', null];
+  const older = conclusions.map((conclusion, index) => check({ id: 9001 + index, conclusion }));
+  const result = run([
+    page([older[3], check({ id: 9011, conclusion: 'cancelled' }), ...older.slice(4)], 10),
+    page([check({ id: 9010 }), ...older.slice(0, 3)], 10),
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'success\n');
+  const lines = result.stderr.trim().split('\n');
+  assert.equal(lines.length, conclusions.length);
+  for (const attempt of older) {
+    assert.ok(lines.some((line) => line.includes(`id=${attempt.id} `) && line.includes(`conclusion=${attempt.conclusion}`)));
+  }
+  assert.doesNotMatch(result.stderr, /9011|cancelled/);
+});
+
+test('an unfinished replacement logs the superseded failure without changing pending stdout', () => {
+  const result = run([page([
+    check({ id: 10001, conclusion: 'failure' }),
+    check({ id: 10002, status: 'queued', conclusion: null }),
+  ])]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'pending\n');
+  assert.match(result.stderr, /^Superseded check-run id=10001 conclusion=failure\n$/);
+});
+
+test('a completed attempt with an unknown or absent conclusion refuses', () => {
+  for (const conclusion of [null, undefined, 'unknown']) {
+    assert.equal(state([page([check({ conclusion })])]), 'failure');
+  }
+});
+
+test('malformed pagination metadata fails closed', () => {
+  for (const pages of [
+    {},
+    [{}],
+    [{ check_runs: null, total_count: 0 }],
+    [page([], -1)],
+    [page([], '0')],
+    [page([], 0.5)],
+    [page([check()], 1), page([], 2)],
+  ]) {
+    const result = run(pages);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Incomplete check-run response/);
+  }
+});
+
+test('a completed branch-preview success alone cannot authorize production', () => {
+  assert.equal(state([page([check({ output: { summary: 'Branch Preview URL: https://preview.pages.dev' } })])]), 'pending');
+});
+
+for (const productionConclusion of ['success', 'failure']) {
+  for (const previewConclusion of ['success', 'failure']) {
+    test(`a newer ${previewConclusion} preview cannot replace production ${productionConclusion}`, () => {
+      const production = check({ id: 1, conclusion: productionConclusion });
+      const preview = check({ id: 2, conclusion: previewConclusion, output: { summary: 'Branch Preview URL: https://preview.pages.dev' } });
+      for (const runs of [[production, preview], [preview, production]]) {
+        assert.equal(state([page(runs)]), productionConclusion);
+      }
+    });
+  }
+}
+
+test('an unfinished check remains pending after failure even if it already mentions a preview', () => {
+  assert.equal(state([page([
+    check({ id: 1, conclusion: 'failure' }),
+    check({ id: 2, status: 'in_progress', conclusion: null, output: { summary: 'Branch Preview URL' } }),
+  ])]), 'pending');
 });
