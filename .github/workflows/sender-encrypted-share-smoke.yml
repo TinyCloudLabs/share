@@ -1,15 +1,28 @@
 name: Sender encrypted share smoke (real OpenKey)
 
-# TC-2933. A brand-new throwaway OpenKey account (email OTP through a private mail.tm inbox, made
-# per run and deleted at its end) signs in to Share, makes a share for one named person (a second
-# private inbox) and that person opens it with the emailed code, against production OpenKey and
+# TC-2933. A brand-new OpenKey account (email OTP through a private mail.tm inbox made per run)
+# signs in to Share, makes a share for one named person (a second private inbox) and that
+# person opens it with the emailed code, against production OpenKey and
 # Node. The link-only share has its own check (sender-signin-smoke.yml); this one covers the
 # encrypted addressed share.
 #
-# Started by hand only (workflow_dispatch). It makes two throwaway inboxes per run and one OpenKey
-# account. By default it opens production Share; with `candidate` it builds the dispatched ref and
+# Runs on each push to main that changes Share's source, its dependencies, this smoke or this
+# workflow (once Cloudflare Pages has deployed the commit), once a day, and by hand
+# (workflow_dispatch). Each run makes one OpenKey account and one encrypted share link, which stay,
+# and two throwaway mail.tm inboxes, deleted at the end of the run. A push or
+# scheduled run opens live Share; a manual run with `candidate` builds the dispatched ref and
 # serves that build at https://share.tinycloud.xyz inside the runner's Chrome only.
 on:
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - package.json
+      - package-lock.json
+      - test/e2e-prod/sender-encrypted-share-smoke.mjs
+      - .github/workflows/sender-encrypted-share-smoke.yml
+  schedule:
+    - cron: "47 6 * * *"
   workflow_dispatch:
     inputs:
       candidate:
@@ -17,17 +30,19 @@ on:
         type: boolean
         default: false
 
+# One run at a time: a run that is waiting starts when the running one ends, and none is cancelled.
 concurrency:
-  group: sender-encrypted-share-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  group: sender-encrypted-share-smoke
+  cancel-in-progress: false
 
 permissions:
   contents: read
+  checks: read
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -39,6 +54,24 @@ jobs:
       - name: Build the candidate
         if: inputs.candidate
         run: npm run build:deploy
+      - name: Wait for Cloudflare Pages to deploy this commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          for attempt in $(seq 1 30); do
+            state=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all&per_page=100" \
+              | node .github/scripts/pages-check-state.mjs "$GITHUB_SHA")
+            echo "Cloudflare Pages: ${state}"
+            case "$state" in
+              success) exit 0 ;;
+              pending) ;;
+              *) echo "Cloudflare Pages did not deploy ${GITHUB_SHA}"; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "Cloudflare Pages did not finish within 10 minutes"; exit 1
       - name: Sender encrypted share smoke
         env:
           SHARE_SMOKE_CANDIDATE: ${{ inputs.candidate && 'dist' || '' }}
