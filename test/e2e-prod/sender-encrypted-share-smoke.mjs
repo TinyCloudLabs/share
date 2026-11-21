@@ -393,7 +393,7 @@ try {
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 300);
   if (report.rateLimited) report.error = scrub(`HTTP 429 from ${report.rateLimitedAt.origin} at ${report.rateLimitedAt.stage}`);
-  await browserClosing;
+  await Promise.race([browserClosing, new Promise((done) => setTimeout(done, 10_000))]);
   // Capture only. Each step runs alone, ends within 5 s and cannot throw, so the error above and the report
   // line always print; a step that fails is named in `report.captureError`. Everything goes through scrub().
   const capture = async (what, step) => {
