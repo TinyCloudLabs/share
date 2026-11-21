@@ -1,7 +1,7 @@
 import { armManualCopy, copyWithFallback, type ManualCopyHandle } from "./clipboard.js";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
-import { MAX_SHARE_FILE_BYTES, SHARE_APPLICATION_PREFIX, takeWalletApprovalFailure } from "./openkey-session.js";
+import { diagnosticSession, MAX_SHARE_FILE_BYTES, SHARE_APPLICATION_PREFIX, takeWalletApprovalFailure } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import type { ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { assertAddressedShareFits, bindPathBoundContentSource, defaultEncryptionNetworkForOwner, encryptAddressedShareContent, historyRecordForPublishedShare, planPathBoundShare, prepareAddressedShare, publishAddressedShare, SharePublishError, type EncryptedAddressedContent, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
@@ -305,6 +305,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   if (file === undefined) throw fail("content", "link-only share has no file");
   if (options.tinycloud === undefined) throw fail("session", "TinyCloud owner session is unavailable");
   const node = await resolveOwnerShareNode(options.tinycloud);
+  // diag: temporary. Milliseconds left in the signed session and in the share: numbers only.
   const bytes = new Uint8Array(await file.arrayBuffer());
   // The bearer slice uses the owner's authenticated applications space as its
   // only persistence and SharingService as its only authority protocol.  The
@@ -320,6 +321,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   });
   const expiresAt = nativeShare.expiresAt.toISOString();
   const record = nativeBearerHistoryRecord({ share: nativeShare, path: nativePath, filename: file.name, target: { origin: node.origin, nodeAudience: node.nodeAudience } });
+  console.error("share diag end session-left-h", ((diagnosticSession.expiresAt - Date.now()) / 3_600_000).toFixed(1), "share-left-h", ((Date.parse(model.expiresAt) - Date.now()) / 3_600_000).toFixed(1));
   return { url: nativeShare.url, cid: nativePath, expiresAt, delegationCid: nativeShare.delegationCid, record };
 }
 

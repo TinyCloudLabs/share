@@ -96,6 +96,12 @@ export function senderFailureMessage(error: unknown): string {
   return `“${shown}” isn't an address at the shared domain. List only addresses at that domain, separated by commas or new lines.`;
 }
 
+/** The error of a sign-in the owner narrowed in OpenKey (removed a permission the library asked for). */
+export const SIGN_IN_NARROWED = "sign-in-approval-narrowed";
+
+// Draft copy, the copy owner words it. Says which permissions Share needs and why (OpenKey will mark them required: TC-3092).
+const SIGN_IN_NARROWED_COPY = "Share needs all the permissions it asks for, to read and change your share library and to open your encrypted shares. Sign in again and allow each one.";
+
 /**
  * TC-335. Same classification, different default. The sign-in wall renders
  * whatever rejects between "Continue with OpenKey" and the first library
@@ -105,6 +111,7 @@ export function senderFailureMessage(error: unknown): string {
  * describes a share that does not exist yet.
  */
 export function authFailureMessage(error: unknown): string {
+  if (error instanceof Error && error.message === SIGN_IN_NARROWED) return SIGN_IN_NARROWED_COPY;
   const kind = senderFailureKind(error);
   return SENDER_FAILURE[kind === "internal" ? "signIn" : kind];
 }

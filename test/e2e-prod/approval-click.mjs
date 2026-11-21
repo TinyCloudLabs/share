@@ -92,7 +92,63 @@ export function elevatedRefusal(shown, expected) {
   if (unexpected.length > 0) return `unexpected permission: ${unexpected.join("; ")}`;
   const missing = expected.required.filter((card) => !shown.cards.includes(card));
   if (missing.length > 0) return `missing permission: ${missing.join("; ")}`;
-  if (!shown.whole) return "no Allow and approve (a request OpenKey can split)";
+  if (!shown.whole) return SPLIT_REFUSAL;
+  return null;
+}
+
+/**
+ * What `elevatedRefusal` says for a warning that matches the step in everything but being one request
+ * OpenKey can split. That is the only refusal `allowElevated` goes on from (see `splitContinue`).
+ */
+export const SPLIT_REFUSAL = "no Allow and approve (a request OpenKey can split)";
+
+/**
+ * A split warning (OpenKey's per-permission review, TC-2927) as it stands: one entry per card with its
+ * heading, whether it reads "You allowed this permission." and whether its "Allow this permission" is
+ * still offered, and whether Continue is enabled. `{ shown: false }` when no warning is showing.
+ */
+export function splitState(doc = document) {
+  const visible = (element) => element.getClientRects().length > 0;
+  const label = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+  const screen = [...doc.querySelectorAll('[role=dialog][aria-labelledby="elevated-title"]')].filter(visible).at(-1);
+  if (screen === undefined) return { shown: false, cards: [], canContinue: false };
+  const cont = [...screen.querySelectorAll("button")].filter(visible).find((button) => /^Continue$/.test(label(button)));
+  return {
+    shown: true,
+    cards: [...screen.querySelectorAll("[role=group]")].map((card) => {
+      const heading = card.querySelector("h2");
+      return {
+        heading: heading ? label(heading.querySelector("span") ?? heading) : "",
+        allowed: /You allowed this permission\./.test(label(card)),
+        offered: [...card.querySelectorAll("button")].some((button) => visible(button) && !button.disabled && /^Allow this permission$/.test(label(button))),
+      };
+    }),
+    canContinue: cont !== undefined && !cont.disabled,
+  };
+}
+
+/** Card `index`'s enabled "Allow this permission" button (`kind` "allow"), or the enabled Continue button (`kind` "continue"); null when there is none. */
+export function splitButton(kind, index, doc = document) {
+  const visible = (element) => element.getClientRects().length > 0;
+  const label = (element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
+  const screen = [...doc.querySelectorAll('[role=dialog][aria-labelledby="elevated-title"]')].filter(visible).at(-1);
+  if (screen === undefined) return null;
+  const scope = kind === "allow" ? screen.querySelectorAll("[role=group]")[index] : screen;
+  const name = kind === "allow" ? /^Allow this permission$/ : /^Continue$/;
+  const found = scope === undefined ? undefined : [...scope.querySelectorAll("button")].filter(visible).find((button) => name.test(label(button)));
+  return found !== undefined && !found.disabled ? found : null;
+}
+
+/**
+ * Why Continue must not be pressed on the split warning `state`, or null: every card the warning shows
+ * (the ones `elevatedRefusal` already matched against the step) must read as allowed, and none may be
+ * rejected or undecided.
+ */
+export function splitContinueRefusal(state) {
+  if (!state.shown || state.cards.length === 0) return "the warning is not showing its cards";
+  const notAllowed = state.cards.filter((card) => !card.allowed).map((card) => card.heading);
+  if (notAllowed.length > 0) return `not allowed at Continue: ${notAllowed.join("; ")}`;
+  if (!state.canContinue) return "Continue is not enabled";
   return null;
 }
 
@@ -109,6 +165,63 @@ async function readElevated(sign) {
 }
 
 /**
+ * The warning is a request OpenKey can split and matches the step (title, cards and required card all
+ * as `elevatedRefusal` checks): presses "Allow this permission" on every card, asserts that every card
+ * reads as allowed and none as rejected, then presses Continue. The entry keeps `wholeRequest: false`
+ * and lists the headings that were allowed at Continue (`allowedAtContinue`). Taken as for Approve: the
+ * review closes, a sign call starts after the press, or the review reads "Signing…".
+ */
+async function splitContinue({ sign, during, report, closed, signedSince, at, stage, takenMs }, shown, entry) {
+  const refuse = (reason) => {
+    entry.refused = scrub(reason).slice(0, 200);
+    report.elevatedRefused ??= { during, stage: entry.stage, reason: entry.refused };
+    return false;
+  };
+  const press = async (kind, index) => {
+    const handle = await sign.evaluateHandle(splitButton, kind, index);
+    try {
+      const button = handle.asElement();
+      if (!button) return false;
+      // DOM .click() is untrusted; OpenKey refuses it inside an iframe.
+      await button.click();
+      return true;
+    } finally {
+      await handle.dispose();
+    }
+  };
+  for (let index = 0; index < shown.cards.length; index += 1) {
+    const before = await sign.evaluate(splitState).catch(() => null);
+    if (before === null || !before.shown) return false;
+    if (before.cards[index]?.allowed) continue;
+    if (!await press("allow", index)) return refuse(`no Allow this permission on card: ${shown.cards[index]}`);
+    const deadline = Date.now() + takenMs;
+    let allowed = false;
+    while (!allowed && Date.now() < deadline) {
+      allowed = (await sign.evaluate(splitState).catch(() => null))?.cards[index]?.allowed === true;
+      if (!allowed) await pause(50);
+    }
+    if (!allowed) return refuse(`card did not read as allowed: ${shown.cards[index]}`);
+  }
+  const state = await sign.evaluate(splitState).catch(() => null);
+  if (state === null) return false;
+  const refusal = splitContinueRefusal(state);
+  if (refusal !== null) return refuse(refusal);
+  entry.allowedAtContinue = state.cards.map((card) => scrub(card.heading).slice(0, 80));
+  const clickedAt = at();
+  if (!await press("continue", 0)) return refuse("Continue could not be pressed");
+  const taken = async () => closed() || signedSince(clickedAt) || await sign.evaluate(signingShown).catch(() => false);
+  const deadline = Date.now() + takenMs;
+  while (Date.now() < deadline) {
+    if (await taken()) { entry.allowed = true; return true; }
+    await pause(50);
+  }
+  if (await taken()) { entry.allowed = true; return true; }
+  report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
+  (report.approveClicksDropped ??= []).push({ during, stage: stage(), atMs: clickedAt, screen: "elevated-split" });
+  return false;
+}
+
+/**
  * The warning is showing in `sign`: records it in `report.elevatedScreens` (step, title, card
  * headings, whether its "Allow and approve" was taken) and clicks "Allow and approve" only when
  * `elevatedRefusal` finds nothing; a refusal goes to `report.elevatedRefused`, nothing is clicked.
@@ -121,6 +234,7 @@ async function allowElevated({ sign, during, report, closed, signedSince, at, st
     report.elevatedScreens ??= [];
     if (report.elevatedScreens.length < 10) report.elevatedScreens.push(entry);
     const refused = elevatedRefusal(shown, elevated);
+    if (refused === SPLIT_REFUSAL) return await splitContinue({ sign, during, report, closed, signedSince, at, stage, takenMs }, shown, entry);
     if (refused !== null) {
       entry.refused = scrub(refused).slice(0, 200);
       report.elevatedRefused ??= { during, stage: entry.stage, reason: entry.refused };

@@ -269,6 +269,11 @@ try {
   // Share's sign-in asks to decrypt on the whole network, so OpenKey must have shown its extra warning
   // and the smoke's "Allow and approve" must have been taken.
   assert((report.elevatedScreens ?? []).some((screen) => screen.during === "signIn" && screen.allowed), "sign-in: OpenKey's extra warning for Share's decrypt was not shown and allowed");
+  // A request OpenKey splits ends in per-card choices (wholeRequest: false): every card on it must have been
+  // allowed at the moment Continue was pressed (TC-2933).
+  for (const screen of (report.elevatedScreens ?? []).filter((entry) => entry.during === "signIn" && entry.allowed && entry.wholeRequest === false)) {
+    assert(JSON.stringify(screen.allowedAtContinue) === JSON.stringify(screen.cards), "sign-in: a card of OpenKey's split warning was not allowed when Continue was pressed");
+  }
 
   setStage("share-create");
   writeFileSync(join(temporary, "smoke.md"), `# Share sender smoke\n\n${nonce}\n`);
