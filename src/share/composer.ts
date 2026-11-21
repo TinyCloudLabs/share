@@ -306,7 +306,6 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   if (options.tinycloud === undefined) throw fail("session", "TinyCloud owner session is unavailable");
   const node = await resolveOwnerShareNode(options.tinycloud);
   // diag: temporary. Milliseconds left in the signed session and in the share: numbers only.
-  console.error("share diag session-left-ms", diagnosticSession.expiresAt - Date.now(), "share-left-ms", Date.parse(model.expiresAt) - Date.now());
   const bytes = new Uint8Array(await file.arrayBuffer());
   // The bearer slice uses the owner's authenticated applications space as its
   // only persistence and SharingService as its only authority protocol.  The
@@ -322,7 +321,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   });
   const expiresAt = nativeShare.expiresAt.toISOString();
   const record = nativeBearerHistoryRecord({ share: nativeShare, path: nativePath, filename: file.name, target: { origin: node.origin, nodeAudience: node.nodeAudience } });
-  console.error("share diag end session-left-ms", diagnosticSession.expiresAt - Date.now(), "share-left-ms", Date.parse(model.expiresAt) - Date.now());
+  console.error("share diag end session-left-h", ((diagnosticSession.expiresAt - Date.now()) / 3_600_000).toFixed(1), "share-left-h", ((Date.parse(model.expiresAt) - Date.now()) / 3_600_000).toFixed(1));
   return { url: nativeShare.url, cid: nativePath, expiresAt, delegationCid: nativeShare.delegationCid, record };
 }
 
