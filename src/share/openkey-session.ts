@@ -11,6 +11,7 @@ import { trackWalletApproval } from "./wallet-approval.js";
 import { SIGN_IN_NARROWED } from "./sender-failure.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 import { LIBRARY_SESSION_PREFIX, markOpenKeySignedInHere } from "./library-session.js";
+import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -338,6 +339,13 @@ export interface SignInWithManifestOptions extends ManifestScope {
    */
   readonly versionedSignIn?: boolean;
   /**
+   * With `versionedSignIn` and `persistSession`: ask OpenKey to offer the owner automatic renewal for up to 90 days
+   * (OpenKey shows its renewal box). When the owner leaves it on, the lease is checked, admitted by the session's node and
+   * kept with the saved session, and a reload past the signed end restores through it. Without a lease the sign-in is a
+   * finite one. Default false.
+   */
+  readonly renewal?: boolean;
+  /**
    * Waits, after sign-in and space hosting, for the SDK's background sync of the
    * account's own space registry, for at most `timeoutMs` (default 15 s). It
    * never rejects: the SDK already logs a failed sync as a warning. The SDK
@@ -393,6 +401,9 @@ function checkOptions(options: SignInWithManifestOptions): void {
   if (sessionPrefix !== undefined) {
     checkLabel("sessionPrefix", sessionPrefix);
     if (!/^[A-Za-z0-9._-]+$/.test(sessionPrefix)) throw new SignInOptionError("sessionPrefix", "letters, digits, dot, dash and underscore only");
+  }
+  if (options.renewal === true && (options.versionedSignIn !== true || options.persistSession !== true)) {
+    throw new SignInOptionError("renewal", "renewal needs the versioned sign-in and a persisted session");
   }
 }
 
@@ -488,10 +499,20 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     await ensureOpenKey();
   };
   // The versioned sign-in's OpenKey client. A reload that restores first has no provider yet: OpenKey opens only when the restore fails.
+  // With renewal it also asks OpenKey to offer a lease (OpenKey does so beside `expiryChangeable`, while its leases are on) and holds what
+  // comes back, with the time it arrived, for `admitSignInRenewal`.
+  const renewalPrefix = options.renewal === true ? options.sessionPrefix ?? DEFAULT_SESSION_PREFIX : undefined;
+  let approvalOutcome: { readonly renewal: unknown; readonly arrivedAt: number } | undefined;
   const versionedClient: OpenKeyAuthorizeTinyCloud = {
     authorizeTinyCloud: async (request, opts) => {
       await ensureOpenKey();
-      return provider!.authorizeTinyCloud(request, opts);
+      if (renewalPrefix === undefined) return provider!.authorizeTinyCloud(request, opts);
+      approvalOutcome = undefined;
+      // `renewal` is on the request type of @openkey/sdk 0.13 and later; the node-sdk client type does not name it.
+      const asked = { ...request, renewal: SIGN_IN_RENEWAL_ASK };
+      const result = await provider!.authorizeTinyCloud(asked, opts);
+      approvalOutcome = { renewal: leaseFromApproval(result), arrivedAt: performance.now() };
+      return result;
     },
   };
   try {
@@ -509,7 +530,9 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     const clientConfig = {
       ...(provider === undefined ? {} : { provider }),
       signStrategy: { type: "callback" as const, handler: approveSignature },
-      ...(options.versionedSignIn === true ? { openkey: { client: versionedClient, mode: "iframe" as const } } : {}),
+      ...(options.versionedSignIn === true
+        ? { openkey: { client: versionedClient, mode: "iframe" as const, ...(renewalPrefix === undefined ? {} : { expiryChangeable: true, maxExpiresAt: () => Date.now() + (options.expiry ?? MAX_SESSION_MS) }) } }
+        : {}),
       ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
       tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
       tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
@@ -532,6 +555,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       disposing ??= (async () => {
         if (opened && session !== undefined) closeOpenKeyFlows(session.openkey);
         try { await tinycloud!.signOut(); } catch { /* The SDK clears a saved session in its own `finally`; one in memory goes with the page. */ }
+        if (renewalPrefix !== undefined) clearRenewalReceipt(renewalPrefix);
       })();
       return disposing;
     };
@@ -552,8 +576,19 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     // address: the SDK restores the record stored for it, checking its shape and expiry but not comparing the record's
     // own address field, and without asking the node. `restoredSessionRefused` below is what asks the node.
     let signedSession: ClientSession | undefined;
+    // Past its signed end, a saved session with a receipt that checks out renews through its lease: no approval, no OpenKey window.
+    // The renewal code (and the lease-checking parts of the SDK it pulls in) loads only when a receipt is kept or a lease came back: a dynamic import by design.
+    const leaseRestore = renewalPrefix === undefined || !hasRenewalReceipt(renewalPrefix) ? null : await (await import("./renewal-receipt.js")).renewalRestoreFor(renewalPrefix);
+    if (leaseRestore !== null) {
+      try {
+        const renewed = await tinycloud.restoreSessionWithRenewal(leaseRestore.leaseAuthorization, leaseRestore.address);
+        if (renewed.status === "restored") signedSession = renewed.session;
+      } catch {
+        // The node no longer renews it (stopped, expired or unreachable): sign in afresh below.
+      }
+    }
     try {
-      signedSession = await tinycloud.signIn();
+      if (signedSession === undefined) signedSession = await tinycloud.signIn();
     } catch (error) {
       // The SDK restored a saved session and then refused to use it (for example a manifest it cannot check against a
       // restored session): handled below like a session the node refuses. Any other failure is the sign-in's own.
@@ -563,6 +598,12 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       // A saved session that cannot be used: clear it and sign in afresh, as on a first visit.
       await tinycloud.signOut();
       signedSession = await tinycloud.signIn();
+    }
+    if (renewalPrefix !== undefined && approvalOutcome !== undefined) {
+      // A fresh sign-in replaced whatever the earlier session held. The lease it came with, if any, is checked, admitted
+      // by the node and kept; with none (OpenKey offers none, or the owner turned renewal off) the sign-in stays finite.
+      clearRenewalReceipt(renewalPrefix);
+      if (approvalOutcome.renewal !== undefined) await (await import("./renewal-receipt.js")).admitSignInRenewal({ tcw: tinycloud, prefix: renewalPrefix, address: session?.address ?? signedSession.address, renewal: approvalOutcome.renewal, arrivedAt: approvalOutcome.arrivedAt });
     }
     const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
     const spaces: Record<string, string> = {};
@@ -695,7 +736,7 @@ export async function createTinyCloudClient(
   // replaced by a fresh sign-in.
   // Every OpenKey approval that completes here needed OpenKey's sign-in in this tab, so Share's Sign out may end it.
   const guardApproval: ApprovalGuard = async (wait) => { const result = await wait(); markOpenKeySignedInHere(); return result; };
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS, versionedSignIn: true });
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS, versionedSignIn: true, renewal: true });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }

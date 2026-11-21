@@ -7,6 +7,7 @@
  * whether there is a session to resume.
  */
 import type { AuthResult } from "@openkey/sdk";
+import { clearRenewalReceipt, renewalReceiptRunning } from "./renewal-store.js";
 
 /** The SDK's storage-key prefix for the library session. Its own, so no other Share sign-in reads or replaces it. */
 export const LIBRARY_SESSION_PREFIX = "tinycloud-share-library-";
@@ -27,7 +28,8 @@ export function savedLibraryAccount(storage?: Pick<Storage, "getItem">): AuthRes
     if (address === null) return undefined;
     const record: unknown = JSON.parse(store.getItem(`${LIBRARY_SESSION_PREFIX}${address}`) ?? "null");
     const expiresAt = typeof record === "object" && record !== null && "expiresAt" in record && typeof record.expiresAt === "string" ? Date.parse(record.expiresAt) : Number.NaN;
-    if (!(Number.isFinite(expiresAt) && expiresAt > Date.now())) return undefined;
+    // Past its signed end a session still resumes while its renewal receipt's lease runs: the SDK restores it through the lease, or signs in afresh.
+    if (!(Number.isFinite(expiresAt) && (expiresAt > Date.now() || renewalReceiptRunning(LIBRARY_SESSION_PREFIX, address, store)))) return undefined;
     const account: unknown = JSON.parse(store.getItem(ACCOUNT_KEY) ?? "null");
     if (typeof account !== "object" || account === null || !("address" in account) || !("keyId" in account) || !("keyType" in account)) return undefined;
     const { address: accountAddress, keyId, keyType } = account;
@@ -44,9 +46,10 @@ export function saveLibraryAccount(auth: AuthResult): void {
   try { window.localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ address: auth.address, keyId: auth.keyId, keyType: auth.keyType })); } catch { /* Not saved: the next load signs in. */ }
 }
 
-/** Forgets the account at sign-out, with the session the SDK clears. */
+/** Forgets the account at sign-out, with the session the SDK clears, and the renewal receipt kept beside it. */
 export function forgetLibraryAccount(): void {
   try { window.localStorage.removeItem(ACCOUNT_KEY); } catch { /* Blocked storage holds nothing to forget. */ }
+  clearRenewalReceipt(LIBRARY_SESSION_PREFIX);
 }
 
 /**
