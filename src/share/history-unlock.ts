@@ -1,7 +1,7 @@
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import { defaultEncryptionNetworkForOwner } from "@tinycloud/share-sdk";
 import { ownerEncryptionNetwork, type OpenKeyShareSession, type ShareTinyCloud } from "./openkey-session.js";
-import { requestInOpenKey } from "./permission-step-up.js";
+import { requestInOpenKeyUntil, type StepUpResult } from "./permission-step-up.js";
 
 /** How long "Unlock" keeps the sent-shares list readable: the requested lifetime of the grant. */
 export const HISTORY_UNLOCK_MS = 3_600_000;
@@ -13,12 +13,13 @@ export function decryptNetworkPermission(address: string): PermissionEntry {
 
 /**
  * Makes the sent-shares list readable: nothing to ask while the grant is live, otherwise one OpenKey approval for
- * `HISTORY_UNLOCK_MS`. True when it is readable now; false when the person did not approve (the list stays locked).
+ * `HISTORY_UNLOCK_MS`. `approved` is true when it is readable now and false when the person did not approve (the list
+ * stays locked); `expiresAt` is when the new grant ends, when the SDK said.
  */
-export async function unlockHistory(tinycloud: Pick<ShareTinyCloud, "hasPermissions" | "requestPermissions">, session: Pick<OpenKeyShareSession, "address">): Promise<boolean> {
+export async function unlockHistory(tinycloud: Pick<ShareTinyCloud, "hasPermissions" | "requestPermissions">, session: Pick<OpenKeyShareSession, "address">): Promise<StepUpResult> {
   const needed = [decryptNetworkPermission(session.address)];
-  if (tinycloud.hasPermissions(needed)) return true;
-  return requestInOpenKey(tinycloud, needed, { expiryMs: HISTORY_UNLOCK_MS });
+  if (tinycloud.hasPermissions(needed)) return { approved: true };
+  return requestInOpenKeyUntil(tinycloud, needed, { expiryMs: HISTORY_UNLOCK_MS });
 }
 
 /** What the library asks to know whether the list is readable, and the one way to make it so. */
@@ -35,10 +36,10 @@ export function historyLock(tinycloud: Pick<ShareTinyCloud, "hasPermissions" | "
     isUnlocked: () => tinycloud.hasPermissions([decryptNetworkPermission(session.address)]),
     unlock: async () => {
       const held = tinycloud.hasPermissions([decryptNetworkPermission(session.address)]);
-      const granted = await unlockHistory(tinycloud, session);
-      // The SDK does not report when the grant ends: it is the requested lifetime from the moment the approval came back.
-      if (granted && !held) lapses = Date.now() + HISTORY_UNLOCK_MS;
-      return granted;
+      const { approved, expiresAt } = await unlockHistory(tinycloud, session);
+      // The end the SDK gave the grant (it can be earlier than the hour asked for, when the session ends first); without one, the requested hour from now.
+      if (approved && !held) lapses = expiresAt ?? Date.now() + HISTORY_UNLOCK_MS;
+      return approved;
     },
     lapsesAt: () => lapses,
   };
