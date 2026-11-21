@@ -16,8 +16,11 @@ export const SIGN_OUT_NEXT = "To come back you'll sign in with OpenKey again.";
 export const SIGNED_OUT_NOTICE = "Signed out of Share in this browser. Share's access won't renew.";
 /** OpenKey did not confirm that it ended its sign-in (so a renewal may still be on). */
 export const SIGNED_OUT_PARTIAL_NOTICE = "You're signed out of Share in this browser, but OpenKey may still be renewing its access. To stop that, choose Stop renewal under Renewing permissions in OpenKey settings.";
-/** OpenKey's widget answers a sign-out in about a second; this only bounds a window that never answers. */
-export const OPENKEY_SIGN_OUT_WAIT_MS = 5_000;
+/**
+ * OpenKey's sign-out opens a window that waits for the person to confirm, and the SDK reports no progress, so this
+ * bounds only a window that is left open. The signed-out screen does not wait for it.
+ */
+export const OPENKEY_SIGN_OUT_WAIT_MS = 120_000;
 
 /** What a sign-out ended besides Share's session. `share-only` is Courier's embedded session, which holds no OpenKey sign-in. */
 export type SignOutOutcome = "openkey-ended" | "openkey-unconfirmed" | "share-only";
@@ -25,35 +28,44 @@ export type SignOutOutcome = "openkey-ended" | "openkey-unconfirmed" | "share-on
 export interface SenderChromeOptions {
   readonly session: OpenKeyShareSession;
   readonly tinycloud: ShareTinyCloud;
-  /** The session is gone: show the sign-in screen with this notice. */
-  readonly onSignedOut: (notice: string) => void;
+  /** The session is gone: show the sign-in screen at once. The notice settles when OpenKey answers, or when its wait ends. */
+  readonly onSignedOut: (notice: Promise<string>) => void;
+}
+
+/** Clears this tab's TinyCloud session: the client's session key and the saved session. Local, with no network the page waits on. */
+export async function endLocalSession(tinycloud: ShareTinyCloud): Promise<void> {
+  try { await tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, even when ending the session throws. */ }
 }
 
 /**
- * Ends this tab's session: the TinyCloud client's session key first (local, no
- * network the page waits on), then OpenKey's own sign-in through its confirm
- * window, in every tab: a tab restored from the saved session (or through a
- * renewal lease) signed nothing in with OpenKey, but OpenKey's sign-out is what
- * stops the leases recorded under its session. `openkey-ended` only when OpenKey
- * confirmed it (`revoked === true`); `openkey-unconfirmed` when it could not (no
- * window, no answer in time, or it said it could not verify). The local session
- * is cleared either way.
+ * Asks OpenKey to end its own sign-in through its confirm window, in every tab: a tab restored from the saved session
+ * (or through a renewal lease) signed nothing in with OpenKey, but OpenKey's sign-out is what stops the leases recorded
+ * under its session. `openkey-ended` only when OpenKey confirmed it (`revoked === true`); `openkey-unconfirmed` when it
+ * could not (no window, a cancel, no answer in time, or it said it could not verify).
  */
-export async function endSenderSession(
-  options: Pick<SenderChromeOptions, "session" | "tinycloud">,
+export async function askOpenKeySignOut(
+  session: OpenKeyShareSession,
   { waitMs = OPENKEY_SIGN_OUT_WAIT_MS }: { readonly waitMs?: number } = {},
 ): Promise<Exclude<SignOutOutcome, "share-only">> {
-  try { await options.tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, even when ending the session throws. */ }
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const silent = new Promise<false>((resolve) => { timer = setTimeout(() => { options.session.openkey.disconnect(); resolve(false); }, waitMs); });
+  const silent = new Promise<false>((resolve) => { timer = setTimeout(() => { session.openkey.disconnect(); resolve(false); }, waitMs); });
   try {
-    const revoked = await Promise.race([options.session.openkey.signOut().then((answer) => answer.revoked === true), silent]);
+    const revoked = await Promise.race([session.openkey.signOut().then((answer) => answer.revoked === true), silent]);
     return revoked ? "openkey-ended" : "openkey-unconfirmed";
   } catch {
     return "openkey-unconfirmed";
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Ends this tab's session: the local clear first, then OpenKey's own sign-in. The local session is cleared either way. */
+export async function endSenderSession(
+  options: Pick<SenderChromeOptions, "session" | "tinycloud">,
+  { waitMs = OPENKEY_SIGN_OUT_WAIT_MS }: { readonly waitMs?: number } = {},
+): Promise<Exclude<SignOutOutcome, "share-only">> {
+  await endLocalSession(options.tinycloud);
+  return askOpenKeySignOut(options.session, { waitMs });
 }
 
 const SIGNED_OUT_NOTICES: Readonly<Record<Exclude<SignOutOutcome, "share-only">, string>> = {
@@ -79,7 +91,11 @@ export function mountSenderChrome(parent: HTMLElement, options: SenderChromeOpti
       title: SIGN_OUT_TITLE, paragraphs: [SIGN_OUT_BODY, SIGN_OUT_NEXT], confirmLabel: "Sign out", opener: signOut,
       onConfirm: () => {
         signOut.disabled = true; signOut.textContent = "Signing out…"; live.textContent = "Signing out…";
-        void endSenderSession(options).then((outcome) => options.onSignedOut(SIGNED_OUT_NOTICES[outcome]));
+        // The local session clears first and the signed-out screen shows at once; OpenKey's answer only picks the notice.
+        void endLocalSession(options.tinycloud).then(() => {
+          const outcome = askOpenKeySignOut(options.session).then((result) => SIGNED_OUT_NOTICES[result]);
+          options.onSignedOut(outcome);
+        });
       },
     });
   });

@@ -23,7 +23,7 @@ interface SenderApp {
 }
 
 /** `resume`: the OpenKey account of a library session saved on this device; the page then resumes it without a tap. */
-function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string): void {
+function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string | Promise<string>): void {
   const resumable = resume !== undefined;
   // The first attempt rebuilds a managed key's session without opening OpenKey; Continue after a failure connects as usual.
   let reopen = resume?.keyType === "MANAGED" ? resume : undefined;
@@ -51,7 +51,9 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
   const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button button-primary auth-button"; submit.textContent = resumable ? "Continue" : "Continue with OpenKey";
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
-  if (notice !== undefined) status.textContent = notice;
+  if (typeof notice === "string") status.textContent = notice;
+  // A notice that settles later (OpenKey's answer to a sign-out) only fills an empty line: a sign-in already under way keeps its own status.
+  else if (notice !== undefined) void notice.then((text) => { if (status.isConnected && status.textContent === "") status.textContent = text; });
   // A saved session resumes on its own (below), so there is nothing to press and nothing to claim unless that fails.
   submit.hidden = resumable;
   copy.hidden = resumable;
