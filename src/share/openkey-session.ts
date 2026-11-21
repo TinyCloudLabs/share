@@ -1,5 +1,5 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { authorizationVerdictOf, EXPIRY, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "viem";
 import type { SharePublicConfig } from "../email-share/config.js";
@@ -232,10 +232,10 @@ export interface ApprovalInfo {
 /** The longest a session may last, and the default, apart from the sign-in session tier below. */
 export const MAX_SESSION_MS = 60 * 60 * 1000;
 /**
- * The SDK's sign-in session tier (`EXPIRY.SESSION_MS`, 30 days: OpenKey's own sign-in limit). Share's library
- * session lasts this long, saved on the device; it is the one value above the hour `expiry` accepts.
+ * How long Share's library session lasts: 30 days, saved on the device. A fixed value, not read from the SDK, so an SDK
+ * upgrade never changes it. It is the one value above the hour `expiry` accepts.
  */
-export const SIGN_IN_SESSION_MS = EXPIRY.SESSION_MS;
+export const SIGN_IN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_APP_NAME = "TinyCloud Share";
 const DEFAULT_SESSION_PREFIX = "tinycloud-share";
 const REGISTRY_SYNC_WAIT_MS = 15_000;
