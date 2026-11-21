@@ -1,14 +1,15 @@
 name: Sender encrypted share smoke (real OpenKey)
 
-# TC-2933. A brand-new throwaway OpenKey account (email OTP through a private mail.tm inbox, made
-# per run and deleted at its end) signs in to Share, makes a share for one named person (a second
-# private inbox) and that person opens it with the emailed code, against production OpenKey and
+# TC-2933. A brand-new OpenKey account (email OTP through a private mail.tm inbox made per run)
+# signs in to Share, makes a share for one named person (a second private inbox) and that
+# person opens it with the emailed code, against production OpenKey and
 # Node. The link-only share has its own check (sender-signin-smoke.yml); this one covers the
 # encrypted addressed share.
 #
 # Runs on each push to main that changes Share's source, its dependencies, this smoke or this
 # workflow (once Cloudflare Pages has deployed the commit), once a day, and by hand
-# (workflow_dispatch). Each run makes two throwaway inboxes and one OpenKey account. A push or
+# (workflow_dispatch). Each run makes one OpenKey account and one encrypted share link, which stay,
+# and two throwaway mail.tm inboxes, deleted at the end of the run. A push or
 # scheduled run opens live Share; a manual run with `candidate` builds the dispatched ref and
 # serves that build at https://share.tinycloud.xyz inside the runner's Chrome only.
 on:
@@ -21,7 +22,7 @@ on:
       - test/e2e-prod/sender-encrypted-share-smoke.mjs
       - .github/workflows/sender-encrypted-share-smoke.yml
   schedule:
-    - cron: "17 6 * * *"
+    - cron: "47 6 * * *"
   workflow_dispatch:
     inputs:
       candidate:
