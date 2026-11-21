@@ -1,6 +1,8 @@
 import type { AuthResult } from "@openkey/sdk";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
+import type { HistoryLock } from "./history-unlock.js";
+import type { NetworkSetup } from "./network-setup.js";
 import type { ComposerPrefill } from "./send-again.js";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { resetRevokeFlights } from "./revoke-flight.js";
@@ -19,6 +21,8 @@ interface SenderApp {
   readonly session: OpenKeyShareSession;
   readonly tinycloud: ShareTinyCloud;
   readonly history: SenderHistoryRepository;
+  readonly historyLock: HistoryLock;
+  readonly networkSetup: NetworkSetup;
   readonly config: SharePublicConfig;
 }
 
@@ -114,7 +118,7 @@ function renderLibrary(current: SenderApp, token: number): void {
   void Promise.all([import("./sender-home.js"), import("./node-status.js")]).then(([{ mountSenderHome, endSenderLibrary }, { createNodeStatusReader }]) => {
     if (token !== renderToken) return;
     screenEnds.add(endSenderLibrary);
-    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate, onSendAgain: (prefill) => { pendingPrefill = prefill; navigate(COMPOSER_ROUTE); }, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
+    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, historyLock: current.historyLock, onNavigate: navigate, onSendAgain: (prefill) => { pendingPrefill = prefill; navigate(COMPOSER_ROUTE); }, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
   });
 }
 
@@ -133,6 +137,8 @@ function renderComposer(current: SenderApp, token: number): void {
       onBack: () => navigate(LIBRARY_ROUTE),
       persistShare: async ({ share }) => {
         if (share.record === undefined) throw new Error("share publisher returned no canonical history record");
+        // The first save needs the account's encryption network; an account that has it is not asked anything.
+        await current.networkSetup.ensure();
         await current.history.save(share.record);
       },
     });
@@ -155,10 +161,12 @@ window.addEventListener("hashchange", render);
 
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
   status.textContent = "Connecting to your encrypted TinyCloud…";
-  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }] = await Promise.all([
+  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { createNetworkSetup, NetworkSetupDeclinedError }, { historyLock }] = await Promise.all([
     import("../email-share/config.js"),
     import("./openkey-session.js"),
     import("./sender-history.js"),
+    import("./network-setup.js"),
+    import("./history-unlock.js"),
   ]);
   const config = await loadSharePublicConfig();
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
@@ -168,7 +176,15 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   saveLibraryAccount(session.auth);
   const unlocked = await tinycloud.vault.unlock();
   if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
-  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
+  // A new account has no encryption network yet: set it up now, so its first link is saved. An account that has one is asked nothing.
+  const networkSetup = createNetworkSetup(tinycloud, session, (message) => { status.textContent = message; });
+  try {
+    await networkSetup.ensure();
+  } catch (error) {
+    // Declined is a sign-in that did not complete. Anything else (the node not answering) leaves the library to show its own state, and the first save asks again.
+    if (error instanceof NetworkSetupDeclinedError) throw error;
+  }
+  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), historyLock: historyLock(tinycloud, session), networkSetup, config };
   const chromeScope = document.createElement("div");
   (root as HTMLElement).replaceChildren(chromeScope, view);
   void import("./sender-chrome.js").then(({ mountSenderChrome }) => {
