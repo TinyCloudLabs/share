@@ -1,0 +1,54 @@
+name: Sender encrypted share smoke (real OpenKey)
+
+# TC-2933. A brand-new throwaway OpenKey account (email OTP through a private mail.tm inbox, made
+# per run and deleted at its end) signs in to Share, makes a share for one named person (a second
+# private inbox) and that person opens it with the emailed code, against production OpenKey and
+# Node. The link-only share has its own check (sender-signin-smoke.yml); this one covers the
+# encrypted addressed share.
+#
+# Started by hand only (workflow_dispatch). It makes two throwaway inboxes per run and one OpenKey
+# account. By default it opens production Share; with `candidate` it builds the dispatched ref and
+# serves that build at https://share.tinycloud.xyz inside the runner's Chrome only.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: "Test this ref's build, not live Share"
+        type: boolean
+        default: false
+
+concurrency:
+  group: sender-encrypted-share-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build the candidate
+        if: inputs.candidate
+        run: npm run build:deploy
+      - name: Sender encrypted share smoke
+        env:
+          SHARE_SMOKE_CANDIDATE: ${{ inputs.candidate && 'dist' || '' }}
+          SHARE_SMOKE_ARTIFACT: ${{ runner.temp }}/sender-encrypted-share-smoke.json
+        run: node test/e2e-prod/sender-encrypted-share-smoke.mjs
+      - name: Keep the scrubbed report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sender-encrypted-share-smoke
+          path: ${{ runner.temp }}/sender-encrypted-share-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14
