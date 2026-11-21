@@ -71,6 +71,8 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
         // `proceed`. The raw text is a developer detail; only the classified
         // message reaches the wall.
         console.debug("tinycloud share: sign-in failed");
+        // The sign-in smoke reads console errors from the candidate build to name a failure's cause. Name, code and a short message only: no tokens and no payloads.
+        console.error("share sign-in failed", error instanceof Error ? error.name : typeof error, typeof error === "object" && error !== null && "code" in error ? error.code : undefined, error instanceof Error ? error.message.slice(0, 160) : undefined);
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
         status.textContent = authFailureMessage(error);
         submit.hidden = false;
