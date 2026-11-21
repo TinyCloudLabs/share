@@ -221,3 +221,26 @@ test('malformed pagination metadata fails closed', () => {
     assert.match(result.stderr, /Incomplete check-run response/);
   }
 });
+
+test('a completed branch-preview success alone cannot authorize production', () => {
+  assert.equal(state([page([check({ output: { summary: 'Branch Preview URL: https://preview.pages.dev' } })])]), 'pending');
+});
+
+for (const productionConclusion of ['success', 'failure']) {
+  for (const previewConclusion of ['success', 'failure']) {
+    test(`a newer ${previewConclusion} preview cannot replace production ${productionConclusion}`, () => {
+      const production = check({ id: 1, conclusion: productionConclusion });
+      const preview = check({ id: 2, conclusion: previewConclusion, output: { summary: 'Branch Preview URL: https://preview.pages.dev' } });
+      for (const runs of [[production, preview], [preview, production]]) {
+        assert.equal(state([page(runs)]), productionConclusion);
+      }
+    });
+  }
+}
+
+test('an unfinished check remains pending after failure even if it already mentions a preview', () => {
+  assert.equal(state([page([
+    check({ id: 1, conclusion: 'failure' }),
+    check({ id: 2, status: 'in_progress', conclusion: null, output: { summary: 'Branch Preview URL' } }),
+  ])]), 'pending');
+});

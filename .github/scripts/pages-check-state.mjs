@@ -15,10 +15,11 @@ if (pages.some((page) => checks.length < page.total_count)) {
   throw new Error('Incomplete check-run response');
 }
 
-// One identity unit: exact app, project name and requested SHA.
+// Production unit: previews share the app, project and SHA, but cannot authorize it.
 const attempts = checks.filter((check) =>
   check.app?.id === 85455 && check.name === 'Cloudflare Pages: share' &&
-  check.head_sha === sha && check.conclusion !== 'cancelled'
+  check.head_sha === sha && check.conclusion !== 'cancelled' &&
+  !(check.status === 'completed' && /Branch Preview URL/.test(check.output?.summary ?? ''))
 );
 const ids = new Set();
 let newestCompleted;
