@@ -88,6 +88,7 @@ const SMOKE_FILE = "tcqa-share-encrypted-smoke.md";
 const MAIL_TM_ORIGIN = "https://api.mail.tm";
 const stopMail = new AbortController();
 let cleaning = false;
+let browserClosing;
 function stopIfRateLimited() {
   if (report.rateLimited) throw new Error(`HTTP 429 from ${report.rateLimitedAt.origin}`);
 }
@@ -96,7 +97,7 @@ function rateLimitedBy(origin) {
   report.rateLimited = true;
   report.rateLimitedAt = { stage, origin };
   stopMail.abort(new Error("HTTP 429"));
-  void browser?.close().catch(() => undefined);
+  browserClosing = browser?.close().catch(() => undefined);
 }
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -392,6 +393,7 @@ try {
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 300);
   if (report.rateLimited) report.error = scrub(`HTTP 429 from ${report.rateLimitedAt.origin} at ${report.rateLimitedAt.stage}`);
+  await browserClosing;
   // Capture only. Each step runs alone, ends within 5 s and cannot throw, so the error above and the report
   // line always print; a step that fails is named in `report.captureError`. Everything goes through scrub().
   const capture = async (what, step) => {
@@ -439,7 +441,7 @@ try {
   await deleteBoth();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
-  rmSync(temporary, { recursive: true, force: true });
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
 /** Name the failure class so a single run's report says whose problem it is. */
