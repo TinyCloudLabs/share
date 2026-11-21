@@ -1,5 +1,5 @@
 import { copyWithFallback } from "./clipboard.js";
-import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
+import { HistoryLockedError, importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
 import { takeWalletApprovalFailure, type OpenKeyShareSession, type ShareTinyCloud } from "./openkey-session.js";
 import { revokeShare, ShareRevocationIncompleteError, type SenderShareRecord, type ShareRevocationResult } from "@tinycloud/share-sdk";
 import { revokePolicyRootV3 } from "@tinycloud/sdk-core";
@@ -13,6 +13,8 @@ import { createAnnouncer } from "./announcer.js";
 import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
 import { SEND_AGAIN_FAILED, SEND_AGAIN_LABEL } from "../short-links/strings.js";
 import { canSendAgain, prefillFromRecord, type ComposerPrefill } from "./send-again.js";
+import type { HistoryLock } from "./history-unlock.js";
+import { HISTORY_LOCKED, HISTORY_UNLOCK, HISTORY_UNLOCK_NOTE } from "./history-copy.js";
 
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
 
@@ -26,6 +28,8 @@ export interface SenderHomeOptions {
   readonly onSendAgain: (prefill: ComposerPrefill) => void;
   /** TC-1584. Asks the owner's node for each share's state. Without it the library shows only what was saved here. */
   readonly statusReader?: NodeStatusReader;
+  /** Whether the saved shares can be read now, and the one way to make them so. Without it the list loads as soon as the library opens. */
+  readonly historyLock?: HistoryLock;
 }
 
 /** Back in the tab after this long, statuses are asked for again. */
@@ -169,7 +173,11 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   const empty = node(doc, "div", "sender-empty-state"); empty.hidden = true;
   const more = node(doc, "button", "button button-secondary sender-load-more", "Load more") as HTMLButtonElement; more.type = "button"; more.hidden = true;
   const error = node(doc, "div", "sender-status"); error.hidden = true; error.setAttribute("role", "alert");
-  content.append(title, table, empty, more, error); shell.append(header, toolbar, freshness, live, announcer.element, content); root.append(shell);
+  // The list is encrypted and readable only while the owner's decrypt grant is live. Until then no record is read, and the only way forward is this button.
+  const locked = node(doc, "div", "sender-status sender-history-locked"); locked.hidden = true; locked.setAttribute("role", "status");
+  const unlockButton = node(doc, "button", "button button-primary", HISTORY_UNLOCK) as HTMLButtonElement; unlockButton.type = "button";
+  locked.append(node(doc, "p", "sender-status-detail", HISTORY_LOCKED), unlockButton, node(doc, "p", "sender-status-detail tc-help", HISTORY_UNLOCK_NOTE));
+  content.append(title, table, empty, more, error, locked); shell.append(header, toolbar, freshness, live, announcer.element, content); root.append(shell);
   const rows = new Map<string, RowHandle>();
 
   const pageRows: HTMLElement[] = [];
@@ -182,6 +190,36 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     body.replaceChildren(); rows.clear();
     for (let index = 0; index < 4; index += 1) { const skeleton = node(doc, "tr", "sender-skeleton-row"); for (let column = 0; column < 6; column += 1) skeleton.append(node(doc, "td", "sender-skeleton-cell", "Loading")); body.append(skeleton); }
   };
+  const unlockedNow = (): boolean => options.historyLock === undefined || options.historyLock.isUnlocked();
+  let lapseTimer: number | undefined;
+  /** The list is not shown and nothing is read: the lock panel stands alone. The ids read under the grant are dropped. */
+  const showLocked = (): void => {
+    window.clearTimeout(lapseTimer);
+    options.history.forgetIndex();
+    announcer.clear();
+    body.replaceChildren(); rows.clear(); pageRows.length = 0; cursor = undefined;
+    table.hidden = true; empty.hidden = true; more.hidden = true; error.hidden = true; recheck.hidden = true; freshness.hidden = true;
+    table.removeAttribute("aria-busy"); live.textContent = "";
+    locked.hidden = false; say(HISTORY_LOCKED);
+  };
+  /** The grant ends at a known time: the lock shows then, without waiting for a click. */
+  const scheduleLapse = (ms: number): void => {
+    window.clearTimeout(lapseTimer);
+    lapseTimer = window.setTimeout(() => {
+      if (scope.signal.aborted) return;
+      // The SDK ends the grant on its own clock, which can be a moment after this one: look again shortly.
+      if (unlockedNow()) { scheduleLapse(1_000); return; }
+      showLocked();
+    }, ms);
+  };
+  const armLapse = (): void => {
+    window.clearTimeout(lapseTimer);
+    const lapsesAt = options.historyLock?.lapsesAt();
+    if (lapsesAt !== undefined && unlockedNow()) scheduleLapse(Math.max(0, lapsesAt - Date.now()));
+  };
+  scope.signal.addEventListener("abort", () => window.clearTimeout(lapseTimer), { once: true });
+  /** Every action that reads a saved share goes through this: once the grant has ended the lock shows again and nothing is read. */
+  const stillUnlocked = (): boolean => { if (unlockedNow()) return true; showLocked(); return false; };
   const openImport = (): void => {
     const dialog = node(doc, "dialog", "sender-import-dialog") as HTMLDialogElement;
     const form = node(doc, "form", "sender-form") as HTMLFormElement; form.method = "dialog";
@@ -368,9 +406,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const confirmed = await confirmDialog(root, {
       title: REVOKE_CONFIRM_TITLE, subject: safeName(item.record), confirmLabel: "Revoke share", danger: true, opener: revoke,
       paragraphs: bearer ? [REVOKE_CONFIRM_BODY, REVOKE_CONFIRM_STORED] : [REVOKE_CONFIRM_BODY_ADDRESSED, REVOKE_CONFIRM_STORED],
-      onConfirm: () => { started.flight = new RevokeFlight(key, (flight) => performRevoke(shareId, flight)); },
+      onConfirm: () => { if (!unlockedNow()) return; started.flight = new RevokeFlight(key, (flight) => performRevoke(shareId, flight)); },
     });
     if (confirmed && started.flight !== undefined) followFlight(started.flight, revoke, status, controls);
+    else if (confirmed) stillUnlocked();
   };
   const renderItem = (item: SenderHistoryItem): void => {
     const row = node(doc, "tr", "sender-history-row");
@@ -387,8 +426,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     paintStatus(status, item.state, item.record.expiresAt);
     const created = node(doc, "td", "", new Date(item.record.registeredAt).toLocaleDateString()); created.dataset.label = "Created";
     const controls = node(doc, "td", "sender-row-actions");
-    const copy = node(doc, "button", "button button-secondary tc-button tc-button--compact", "Copy link") as HTMLButtonElement; copy.type = "button"; copy.setAttribute("aria-label", `Copy link for ${safeName(item.record)}`); copy.addEventListener("click", () => { copy.disabled = true; void options.history.show(item.record.shareId, true).then((view) => { if (view.link === undefined) throw new Error("share-link-unavailable"); return copyWithFallback(view.link); }).then(() => { live.textContent = "Link copied."; }).catch(() => { live.textContent = "Copy failed. Try again after allowing clipboard access."; }).finally(() => { copy.disabled = false; }); });
-    const open = node(doc, "button", "button button-secondary tc-button tc-button--compact", "Open") as HTMLButtonElement; open.type = "button"; open.setAttribute("aria-label", `Open ${safeName(item.record)}`); open.addEventListener("click", () => { open.disabled = true; void options.history.show(item.record.shareId, true).then((view) => { if (view.link === undefined) throw new Error("share-link-unavailable"); openSenderViewer(view.link, live); }).catch(() => { live.textContent = "The share link could not be opened. Try again."; }).finally(() => { open.disabled = false; }); });
+    const copy = node(doc, "button", "button button-secondary tc-button tc-button--compact", "Copy link") as HTMLButtonElement; copy.type = "button"; copy.setAttribute("aria-label", `Copy link for ${safeName(item.record)}`); copy.addEventListener("click", () => { if (!stillUnlocked()) return; copy.disabled = true; void options.history.show(item.record.shareId, true).then((view) => { if (view.link === undefined) throw new Error("share-link-unavailable"); return copyWithFallback(view.link); }).then(() => { live.textContent = "Link copied."; }).catch(() => { live.textContent = "Copy failed. Try again after allowing clipboard access."; }).finally(() => { copy.disabled = false; }); });
+    const open = node(doc, "button", "button button-secondary tc-button tc-button--compact", "Open") as HTMLButtonElement; open.type = "button"; open.setAttribute("aria-label", `Open ${safeName(item.record)}`); open.addEventListener("click", () => { if (!stillUnlocked()) return; open.disabled = true; void options.history.show(item.record.shareId, true).then((view) => { if (view.link === undefined) throw new Error("share-link-unavailable"); openSenderViewer(view.link, live); }).catch(() => { live.textContent = "The share link could not be opened. Try again."; }).finally(() => { open.disabled = false; }); });
     itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy);
     if (item.state !== "revoked") {
       const available = canSendAgain(item.record);
@@ -397,6 +436,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       sendAgain.setAttribute("aria-label", `${SEND_AGAIN_LABEL}: ${safeName(item.record)}`);
       // The saved share is read when clicked; only who it was for, how long it lasted and its file name go to the composer.
       sendAgain.addEventListener("click", () => {
+        if (!stillUnlocked()) return;
         sendAgain.disabled = true;
         void options.history.records.get(item.record.shareId).then((record) => {
           if (record === undefined) throw new Error("share-not-found");
@@ -416,7 +456,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
         revoke.title = "This saved link can't be revoked because its revocation authority is missing.";
         revoke.classList.add("sender-revoke-unavailable");
       } else {
-        revoke.addEventListener("click", () => { void revokeRow(item, revoke, status, controls); });
+        revoke.addEventListener("click", () => { if (!stillUnlocked()) return; void revokeRow(item, revoke, status, controls); });
       }
       controls.append(revoke);
       // A revoke still open from before this view was mounted: show it, never an enabled button.
@@ -489,6 +529,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   };
   const load = async (append: boolean): Promise<void> => {
     if (loading || (append && cursor === undefined)) return;
+    if (!unlockedNow()) { showLocked(); return; }
+    locked.hidden = true; recheck.hidden = options.statusReader === undefined;
     loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; more.hidden = true; renderSkeleton(); }
     // True while an automatic retry is scheduled: the load is still pending, so the busy state must not drop in between.
     let retryScheduled = false;
@@ -499,6 +541,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       page.items.forEach(renderItem); cursor = page.nextCursor; more.hidden = !page.truncated; if (page.items.length > 0) live.textContent = append ? `${page.items.length} more shares loaded.` : `${page.items.length} shares loaded.`;
       if (page.items.length > 0) void checkStatus();
     } catch (caught) {
+      if (caught instanceof HistoryLockedError || !unlockedNow()) { showLocked(); return; }
       if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudSenderHistoryError?: string }).__tinycloudSenderHistoryError = caught instanceof Error ? caught.message : String(caught);
       if (!append && initialLoadRetries < 3) {
         initialLoadRetries += 1; retryScheduled = true;
@@ -515,10 +558,22 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   newShare.addEventListener("click", () => options.onNavigate("#/new"));
   more.addEventListener("click", () => { const firstNew = pageRows.length; void load(true).then(() => pageRows[firstNew]?.focus?.()); });
   recheck.addEventListener("click", () => { void checkStatus(); });
+  let unlocking = false;
+  unlockButton.addEventListener("click", () => {
+    if (unlocking || options.historyLock === undefined) return;
+    unlocking = true; unlockButton.disabled = true;
+    // Not approved, or the OpenKey window was closed: the list stays locked and the button stays.
+    void options.historyLock.unlock().then((granted) => { if (granted && !scope.signal.aborted) { locked.hidden = true; armLapse(); void load(false); } }).catch(() => undefined).finally(() => { unlocking = false; unlockButton.disabled = false; });
+  });
   // A revoke made on the account site or the CLI while this tab was in the background shows up when the sender comes back.
-  const onReturn = (): void => { if (shell.isConnected && doc.visibilityState !== "hidden" && Date.now() - lastCheck > FOCUS_RECHECK_MS) void checkStatus(); };
+  const onReturn = (): void => {
+    if (!shell.isConnected || doc.visibilityState === "hidden") return;
+    if (!unlockedNow()) { if (locked.hidden) showLocked(); return; }
+    if (Date.now() - lastCheck > FOCUS_RECHECK_MS) void checkStatus();
+  };
   window.addEventListener("focus", onReturn, { signal: scope.signal });
   doc.addEventListener("visibilitychange", onReturn, { signal: scope.signal });
+  armLapse();
   void load(false);
 }
 

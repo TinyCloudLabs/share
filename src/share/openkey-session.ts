@@ -1,6 +1,6 @@
 import "./install-buffer.js";
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { authorizationVerdictOf, EXPIRY, extractRecapAttenuations, unauthorizedRecapCapabilities, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, extractRecapAttenuations, unauthorizedRecapCapabilities, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import type { OpenKeyAuthorizeTinyCloud } from "@tinycloud/node-sdk/core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "viem";
@@ -244,7 +244,7 @@ export function registerWalletApprovalObserver(tinycloud: ShareTinyCloud, provid
   approvalObservers.set(tinycloud, provider);
 }
 
-export function takeWalletApprovalFailure(tinycloud: ShareTinyCloud): WalletApprovalFailure | undefined {
+export function takeWalletApprovalFailure(tinycloud: object): WalletApprovalFailure | undefined {
   return approvalObservers.get(tinycloud)?.takeFailure();
 }
 
@@ -275,10 +275,10 @@ export interface ApprovalInfo {
 /** The longest a session may last, and the default, apart from the sign-in session tier below. */
 export const MAX_SESSION_MS = 60 * 60 * 1000;
 /**
- * The SDK's sign-in session tier (`EXPIRY.SESSION_MS`, 30 days: OpenKey's own sign-in limit). Share's library
- * session lasts this long, saved on the device; it is the one value above the hour `expiry` accepts.
+ * How long Share's library session lasts: 30 days, saved on the device. A fixed value, not read from the SDK, so an SDK
+ * upgrade never changes it. It is the one value above the hour `expiry` accepts.
  */
-export const SIGN_IN_SESSION_MS = EXPIRY.SESSION_MS;
+export const SIGN_IN_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_APP_NAME = "TinyCloud Share";
 const DEFAULT_SESSION_PREFIX = "tinycloud-share";
 const REGISTRY_SYNC_WAIT_MS = 15_000;
@@ -669,7 +669,7 @@ function closeOpenKeyFlows(openkey: OpenKey): void {
   try { openkey.disconnect(); } catch { /* Nothing was open. */ }
 }
 
-/** What Share's own library needs: the owner space, history, credentials and the private copies area, and the owner's decrypt grant. */
+/** What Share's own library needs: the owner space, history, credentials and the private copies area, and decrypt on the share/ prefix. */
 export function shareManifest(address: string): Manifest {
   return {
     manifest_version: 1,
@@ -685,7 +685,6 @@ export function shareManifest(address: string): Manifest {
       ...historyPermissions(),
       ...credentialSpacePermissions(),
       ...filesForYouPermissions(),
-      { service: "tinycloud.encryption", path: ownerEncryptionNetwork(address), actions: ["decrypt", "network.create"], skipPrefix: true },
       // Decrypt on the share/ prefix, built by the SDK: the node registers a share's policy only for an owner holding decrypt on the share's key.
       ...pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }),
       ...accountRegistryReadPermissions(),
@@ -697,13 +696,12 @@ export function shareManifest(address: string): Manifest {
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
   allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE, ACCOUNT_SPACE],
   allowedServices: ["kv", "vault", "encryption", "delegation"],
-  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "tinycloud.delegation/list"],
+  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "tinycloud.delegation/list"],
   allowedPathPrefixes: [
     { space: ACCOUNT_SPACE, prefix: "spaces/" },
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },
     { space: FILES_FOR_YOU_SPACE, prefix: FILES_FOR_YOU_PREFIX },
-    { space: "encryption", prefix: "urn:tinycloud:encryption:did:pkh:eip155:1:{address}:default" },
     // A key under a network is spelled with the owner's checksummed address: exactly the share/ prefix the SDK's sign-in entry names.
     { space: "encryption", prefix: "urn:tinycloud:encryption:did:pkh:eip155:1:{checksumAddress}:default/share/" },
   ],

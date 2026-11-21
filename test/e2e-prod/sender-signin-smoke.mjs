@@ -40,13 +40,13 @@ const OPENKEY = process.env.SHARE_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
 const MAX_SIGNIN_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SIGNIN_PROMPTS ?? 2);
 const MAX_SHARE_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SHARE_PROMPTS ?? 1);
 // What OpenKey's extra warning (TC-2927) must show at sign-in: Share's library asks to decrypt on the
-// owner's whole encryption network and on its share/ prefix (src/share/openkey-session.ts, shareManifest).
-// The whole-network card is required: without it this is not Share's sign-in request. No other step
+// owner's share/ prefix (src/share/openkey-session.ts, shareManifest).
+// The share/ card is required: without it this is not Share's sign-in request. No other step
 // may reach the warning.
 const ELEVATED_SIGN_IN = {
   site: new URL(SHARE).host,
-  cards: ["Unlock all your encrypted data", "Unlock encrypted items in a folder named share"],
-  required: ["Unlock all your encrypted data"],
+  cards: ["Unlock encrypted items in a folder named share"],
+  required: ["Unlock encrypted items in a folder named share"],
 };
 // Share's failure copy (src/share/sender-failure.ts) ends a sign-in or a share.
 const FAILURE_COPY = /temporarily unavailable|couldn't reach tinycloud|could not be completed|went wrong|session expired|isn't set up|storage isn't ready|didn't go through|couldn't create/i;
@@ -266,9 +266,9 @@ try {
   const signInMismatch = signatureMismatch(report.prompts.signIn, report.signatures.signIn);
   assert(signInMismatch === null, `sign-in: ${signInMismatch}`);
   assert(report.prompts.signIn <= MAX_SIGNIN_PROMPTS, `sign-in needed ${report.prompts.signIn} OpenKey approvals (max ${MAX_SIGNIN_PROMPTS})`);
-  // Share's sign-in asks to decrypt on the whole network, so OpenKey must have shown its extra warning
+  // Share's sign-in asks to decrypt on its share/ prefix, so OpenKey must have shown its extra warning
   // and the smoke's "Allow and approve" must have been taken.
-  assert((report.elevatedScreens ?? []).some((screen) => screen.during === "signIn" && screen.allowed), "sign-in: OpenKey's extra warning for Share's decrypt was not shown and allowed");
+  assert((report.elevatedScreens ?? []).some((screen) => screen.during === "signIn" && screen.allowed), "sign-in: OpenKey's extra warning for Share's share/ decrypt was not shown and allowed");
   // A request OpenKey splits ends in per-card choices (wholeRequest: false): every card on it must have been
   // allowed at the moment Continue was pressed (TC-2933).
   for (const screen of (report.elevatedScreens ?? []).filter((entry) => entry.during === "signIn" && entry.allowed && entry.wholeRequest === false)) {

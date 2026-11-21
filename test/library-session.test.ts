@@ -23,7 +23,7 @@ vi.mock("../src/share/openkey-session.js", () => {
       await calls.clientGate;
       // A restore that fails and a fresh approval that is cancelled, as one failure.
       if (calls.clientFailures > 0) { calls.clientFailures -= 1; throw Object.assign(new Error("closed"), { code: "USER_CANCELLED" }); }
-      return { vault: { unlock: async () => ({ ok: true, data: undefined }) }, signOut: async () => undefined, spaceId: "applications" };
+      return { vault: { unlock: async () => ({ ok: true, data: undefined }) }, signOut: async () => undefined, hasPermissions: () => false, spaceId: "applications" };
     },
     MAX_SHARE_FILE_BYTES: 100 * 1024 * 1024,
     SHARE_APPLICATION_PREFIX: "xyz.tinycloud.share/",
