@@ -55,6 +55,16 @@ const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+// One run makes at most two throwaway inboxes: the sender's (its OpenKey account) and the recipient's.
+// A third is refused before mail.tm is called.
+const MAX_INBOXES = 2;
+let inboxesMade = 0;
+async function makeInbox(label) {
+  if (inboxesMade >= MAX_INBOXES) throw new Error(`a run makes at most ${MAX_INBOXES} throwaway inboxes`);
+  inboxesMade += 1;
+  return createInbox(label);
+}
+
 const deleteBoth = async () => { const { deleted, total } = await deleteInboxes(); report.inboxesDeleted = deleted === total; };
 deleteInboxesOnStop();
 
@@ -228,8 +238,8 @@ try {
   });
 
   setStage("inbox");
-  senderInbox = await createInbox("share-enc-sender");
-  recipientInbox = await createInbox("share-enc-recipient");
+  senderInbox = await makeInbox("share-enc-sender");
+  recipientInbox = await makeInbox("share-enc-recipient");
 
   setStage("share-load");
   await sender.goto(`${SHARE}/share#/new`, { waitUntil: "domcontentloaded", timeout: 90_000 });

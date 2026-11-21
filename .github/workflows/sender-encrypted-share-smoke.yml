@@ -6,26 +6,23 @@ name: Sender encrypted share smoke (real OpenKey)
 # Node. The link-only share has its own check (sender-signin-smoke.yml); this one covers the
 # encrypted addressed share.
 #
-# - pull_request: the candidate build, served at https://share.tinycloud.xyz inside the runner's
-#   Chrome only.
-# - push to main: production, once Cloudflare Pages has deployed this commit.
-# - schedule / workflow_dispatch: production, so an OpenKey release that breaks encrypted shares
-#   shows up here too.
+# Started by hand only (workflow_dispatch). It makes two throwaway inboxes per run and one OpenKey
+# account. By default it opens production Share; with `candidate` it builds the dispatched ref and
+# serves that build at https://share.tinycloud.xyz inside the runner's Chrome only.
 on:
-  pull_request:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "47 6 * * *"
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: "Test this ref's build, not live Share"
+        type: boolean
+        default: false
 
 concurrency:
-  group: sender-encrypted-share-smoke-${{ github.event_name }}-${{ github.ref }}
+  group: sender-encrypted-share-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  checks: read
 
 jobs:
   smoke:
@@ -40,29 +37,11 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
       - name: Build the candidate
-        if: github.event_name == 'pull_request'
+        if: inputs.candidate
         run: npm run build:deploy
-      - name: Wait for Cloudflare Pages to deploy this commit
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -o pipefail
-          for attempt in $(seq 1 60); do
-            state=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all&per_page=100" \
-              | node .github/scripts/pages-check-state.mjs "$GITHUB_SHA")
-            echo "Cloudflare Pages: ${state}"
-            case "$state" in
-              success) exit 0 ;;
-              pending) ;;
-              *) echo "Cloudflare Pages did not deploy ${GITHUB_SHA}"; exit 1 ;;
-            esac
-            sleep 20
-          done
-          echo "Cloudflare Pages did not finish within 20 minutes"; exit 1
       - name: Sender encrypted share smoke
         env:
-          SHARE_SMOKE_CANDIDATE: ${{ github.event_name == 'pull_request' && 'dist' || '' }}
+          SHARE_SMOKE_CANDIDATE: ${{ inputs.candidate && 'dist' || '' }}
           SHARE_SMOKE_ARTIFACT: ${{ runner.temp }}/sender-encrypted-share-smoke.json
         run: node test/e2e-prod/sender-encrypted-share-smoke.mjs
       - name: Keep the scrubbed report
