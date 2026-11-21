@@ -65,15 +65,34 @@ export function hasRenewalReceipt(prefix: string, storage?: Pick<Storage, "getIt
   try { return (storage ?? window.localStorage).getItem(receiptKey(prefix)) !== null; } catch { return false; }
 }
 
-const RENEWAL_ENDED_CODES: ReadonlySet<string> = new Set(["RENEWAL_LEASE_EXPIRED", "RENEWAL_LEASE_ORIGINAL_EXPIRED", "RENEWAL_AUTHORITY_INACTIVE"]);
+// What a failed fetch looks like per engine: Chromium, Firefox, Safari, undici.
+const NETWORK_FAILURE = /failed to fetch|networkerror|load failed|network request failed|fetch failed|timed? ?out/i;
+
+/** A network failure, timeout or 408/429/5xx answer: the node was not reached, so it said nothing about the lease. */
+export function isTransientRestoreError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current != null; depth++) {
+    if (typeof current !== "object") return typeof current === "string" && NETWORK_FAILURE.test(current);
+    if ("name" in current && (current.name === "AbortError" || current.name === "TimeoutError")) return true;
+    if ("status" in current && typeof current.status === "number" && (current.status >= 500 || current.status === 408 || current.status === 429)) return true;
+    if ("message" in current && typeof current.message === "string") {
+      if (NETWORK_FAILURE.test(current.message)) return true;
+      if (/\bHTTP (5\d\d|408|429)\b/.test(current.message)) return true;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}
 
 /**
- * Whether a failed restore through the lease is the node's own answer that the lease ended: expired or no longer active
- * (revoked or stopped). Anything else (no network, a timeout, a 5xx) says nothing about the lease, so the receipt is kept
- * and the next load tries again.
+ * Whether a restore through the lease that did not come back `restored` ends the receipt. Only `restore-failed` carries an
+ * error from reaching the node, so only it can be transient, and an offline device cannot tell the two apart. Every other
+ * status, and any refusal that is not clearly transient (a 403, a code naming a revoked or expired lease, an unknown
+ * error), is the node's verdict that a retry would not change.
  */
-export function renewalEnded(failure: unknown): boolean {
-  return typeof failure === "object" && failure !== null && "code" in failure && typeof failure.code === "string" && RENEWAL_ENDED_CODES.has(failure.code);
+export function renewalRestoreEnded(result: { status: string; error?: unknown }, offline: boolean): boolean {
+  if (result.status !== "restore-failed") return true;
+  return !(offline || isTransientRestoreError(result.error));
 }
 
 /** A restore through the lease that failed without the node saying the lease ended: nothing was changed, so the next load retries. */

@@ -11,7 +11,7 @@ import { trackWalletApproval } from "./wallet-approval.js";
 import { SIGN_IN_NARROWED } from "./sender-failure.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 import { LIBRARY_SESSION_PREFIX } from "./library-session.js";
-import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, RENEWAL_RESTORE_UNAVAILABLE, renewalEnded, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
+import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, RENEWAL_RESTORE_UNAVAILABLE, renewalRestoreEnded, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -580,19 +580,19 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     // The renewal code (and the lease-checking parts of the SDK it pulls in) loads only when a receipt is kept or a lease came back: a dynamic import by design.
     const leaseRestore = renewalPrefix === undefined || !hasRenewalReceipt(renewalPrefix) ? null : await (await import("./renewal-receipt.js")).renewalRestoreFor(renewalPrefix);
     if (renewalPrefix !== undefined && leaseRestore !== null) {
-      let failure: unknown;
+      let outcome: { status: string; error?: unknown } = { status: "restore-failed" };
       try {
         const renewed = await tinycloud.restoreSessionWithRenewal(leaseRestore.leaseAuthorization, leaseRestore.address);
         if (renewed.status === "restored") signedSession = renewed.session;
-        // "expired" is the SDK's own finding that the lease does not extend the session; a "restore-failed" carries the cause.
-        else failure = renewed.status === "expired" ? { code: "RENEWAL_LEASE_EXPIRED" } : renewed.status === "restore-failed" ? renewed.error ?? new Error("restore-failed") : undefined;
+        else outcome = renewed;
       } catch (error) {
-        failure = error;
+        outcome = { status: "restore-failed", error };
       }
       if (signedSession === undefined) {
-        // Only the node's answer that the lease ended (expired, revoked or stopped) drops the receipt and signs in afresh below.
-        // A transient failure keeps the receipt and the saved session, and the sign-in screen offers Continue: the next load retries.
-        if (failure !== undefined && !renewalEnded(failure)) throw new Error(RENEWAL_RESTORE_UNAVAILABLE);
+        // The receipt is dropped, and the sign-in goes on afresh below, when the node's answer ends the lease: expired,
+        // revoked, stopped or any refusal that is not clearly transient. A network failure, a timeout, a 408, 429 or 5xx
+        // answer, or an offline device keeps the receipt and the saved session, and the sign-in screen offers Continue: the next load retries.
+        if (!renewalRestoreEnded(outcome, typeof navigator !== "undefined" && navigator.onLine === false)) throw new Error(RENEWAL_RESTORE_UNAVAILABLE);
         clearRenewalReceipt(renewalPrefix);
       }
     }

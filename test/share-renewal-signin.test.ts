@@ -22,7 +22,7 @@ const state = vi.hoisted(() => ({
   restores: [] as Array<{ lease: string; address: string }>,
   cleanups: 0,
   signedOut: 0,
-  restoreResult: "restored" as "restored" | "throws" | "revoked" | "expired-status" | "failed-status" | "lease-expired",
+  restoreResult: "restored" as "restored" | "throws" | "revoked" | "expired-status" | "failed-status" | "lease-expired" | "forbidden" | "unknown-refusal" | "timeout" | "http-503-thrown",
   admitted: [] as Array<Record<string, unknown>>,
   leaseToRestore: null as null | { address: string; leaseAuthorization: string },
 }));
@@ -55,7 +55,11 @@ vi.mock("@tinycloud/web-sdk", () => ({
       if (state.restoreResult === "revoked") throw Object.assign(new Error("inactive"), { code: "RENEWAL_AUTHORITY_INACTIVE" });
       if (state.restoreResult === "lease-expired") throw Object.assign(new Error("expired"), { code: "RENEWAL_LEASE_EXPIRED" });
       if (state.restoreResult === "expired-status") return { status: "expired" };
-      if (state.restoreResult === "failed-status") return { status: "restore-failed", error: new Error("503") };
+      if (state.restoreResult === "failed-status") return { status: "restore-failed", error: Object.assign(new Error("node answered"), { status: 503 }) };
+      if (state.restoreResult === "forbidden") throw Object.assign(new Error("node answered"), { status: 403 });
+      if (state.restoreResult === "unknown-refusal") throw new Error("something unexpected");
+      if (state.restoreResult === "timeout") throw Object.assign(new Error("took too long"), { name: "TimeoutError" });
+      if (state.restoreResult === "http-503-thrown") throw new Error("wrapped", { cause: new Error("HTTP 503 from the node") });
       return { status: "restored", session: { address, siwe: "restored-siwe" } };
     }
     cleanups = 0;
@@ -178,7 +182,7 @@ describe("a reload past the signed end", () => {
   });
 
   it("keeps the receipt and the saved session on a transient failure, and the next load tries the lease again", async () => {
-    for (const failure of ["throws", "failed-status"] as const) {
+    for (const failure of ["throws", "failed-status", "timeout", "http-503-thrown"] as const) {
       saveRenewalReceipt(PREFIX, ADDRESS, LEASE);
       state.leaseToRestore = { address: ADDRESS, leaseAuthorization: "lease-authorization" };
       state.restoreResult = failure;
@@ -193,7 +197,7 @@ describe("a reload past the signed end", () => {
       // The saved session is not signed out (that would clear it): only the attempt's own client is let go.
       expect(state.signedOut).toBe(0);
     }
-    expect(state.cleanups).toBe(2);
+    expect(state.cleanups).toBe(4);
     // The next load: the network is back, and the lease restores the session with no approval.
     state.restoreResult = "restored";
     state.restores.length = 0;
@@ -203,8 +207,8 @@ describe("a reload past the signed end", () => {
     expect(hasRenewalReceipt(PREFIX)).toBe(true);
   });
 
-  it("drops the receipt and signs in afresh only when the node says the lease ended", async () => {
-    for (const answer of ["revoked", "lease-expired", "expired-status"] as const) {
+  it("drops the receipt and signs in afresh on any refusal that is not clearly transient", async () => {
+    for (const answer of ["revoked", "lease-expired", "expired-status", "forbidden", "unknown-refusal"] as const) {
       saveRenewalReceipt(PREFIX, ADDRESS, LEASE);
       state.leaseToRestore = { address: ADDRESS, leaseAuthorization: "lease-authorization" };
       state.restoreResult = answer;
