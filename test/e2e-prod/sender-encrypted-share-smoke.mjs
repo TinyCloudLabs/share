@@ -41,8 +41,8 @@ const MAX_SHARE_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SHARE_PROMPTS ?? 1)
 // What OpenKey's extra warning (TC-2927) must show at sign-in: the same request as sender-signin-smoke.mjs.
 const ELEVATED_SIGN_IN = {
   site: new URL(SHARE).host,
-  cards: ["Unlock all your encrypted data", "Unlock encrypted items in a folder named share"],
-  required: ["Unlock all your encrypted data"],
+  cards: ["Unlock encrypted items in a folder named share"],
+  required: ["Unlock encrypted items in a folder named share"],
 };
 // An addressed link is /s/<26 base32 chars>#v=4&k=<key>; a link-only share does not look like this.
 const ADDRESSED_LINK = /^https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&k=\S+$/;

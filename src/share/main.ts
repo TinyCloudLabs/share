@@ -1,6 +1,8 @@
 import type { AuthResult } from "@openkey/sdk";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
+import type { HistoryLock } from "./history-unlock.js";
+import type { NetworkSetup } from "./network-setup.js";
 import type { ComposerPrefill } from "./send-again.js";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { resetRevokeFlights } from "./revoke-flight.js";
@@ -8,6 +10,9 @@ import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
 import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
+import { NETWORK_SETUP_DECLINED } from "./history-copy.js";
+import { NetworkSetupDeclinedError } from "./network-setup-declined.js";
+import { StaleSessionError } from "./stale-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -19,6 +24,8 @@ interface SenderApp {
   readonly session: OpenKeyShareSession;
   readonly tinycloud: ShareTinyCloud;
   readonly history: SenderHistoryRepository;
+  readonly historyLock: HistoryLock;
+  readonly networkSetup: NetworkSetup;
   readonly config: SharePublicConfig;
 }
 
@@ -76,7 +83,13 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
         // message reaches the wall.
         console.debug("tinycloud share: sign-in failed");
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
-        status.textContent = authFailureMessage(error);
+        const declined = error instanceof NetworkSetupDeclinedError;
+        // Either way this device is already signed out: a resumed wall ("Welcome back") starts over as a first sign-in.
+        if ((declined || error instanceof StaleSessionError) && resumable) {
+          mountAuthentication(root, undefined, proceed, declined ? NETWORK_SETUP_DECLINED : undefined);
+          return;
+        }
+        status.textContent = declined ? NETWORK_SETUP_DECLINED : error instanceof StaleSessionError ? "" : authFailureMessage(error);
         submit.hidden = false;
         submit.disabled = false;
         if (resumable) {
@@ -114,7 +127,7 @@ function renderLibrary(current: SenderApp, token: number): void {
   void Promise.all([import("./sender-home.js"), import("./node-status.js")]).then(([{ mountSenderHome, endSenderLibrary }, { createNodeStatusReader }]) => {
     if (token !== renderToken) return;
     screenEnds.add(endSenderLibrary);
-    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate, onSendAgain: (prefill) => { pendingPrefill = prefill; navigate(COMPOSER_ROUTE); }, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
+    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, historyLock: current.historyLock, onNavigate: navigate, onSendAgain: (prefill) => { pendingPrefill = prefill; navigate(COMPOSER_ROUTE); }, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
   });
 }
 
@@ -133,6 +146,8 @@ function renderComposer(current: SenderApp, token: number): void {
       onBack: () => navigate(LIBRARY_ROUTE),
       persistShare: async ({ share }) => {
         if (share.record === undefined) throw new Error("share publisher returned no canonical history record");
+        // The first save needs the account's encryption network; an account that has it is not asked anything.
+        await current.networkSetup.ensure();
         await current.history.save(share.record);
       },
     });
@@ -153,22 +168,48 @@ function render(): void {
 
 window.addEventListener("hashchange", render);
 
+/** Ends the session on this device the way Sign out does, locally and first: the client's session key and the saved session, then the remembered account. OpenKey is not contacted. */
+async function endSessionHere(tinycloud: ShareTinyCloud): Promise<void> {
+  try { await tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`. */ }
+  forgetLibraryAccount();
+}
+
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
   status.textContent = "Connecting to your encrypted TinyCloud…";
-  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }] = await Promise.all([
+  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { createNetworkSetup }, { historyLock, holdsWholeNetworkAccess }] = await Promise.all([
     import("../email-share/config.js"),
     import("./openkey-session.js"),
     import("./sender-history.js"),
+    import("./network-setup.js"),
+    import("./history-unlock.js"),
   ]);
   const config = await loadSharePublicConfig();
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
+  // A session saved before Share stopped asking for the whole encryption network still holds it, and the SDK restores it as is.
+  // It is not kept: this device is signed out and the person signs in again, which asks for the current set only.
+  if (holdsWholeNetworkAccess(tinycloud, session.address)) {
+    await endSessionHere(tinycloud);
+    throw new StaleSessionError();
+  }
   // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
   status.textContent = "Signed in. Loading your shares…";
   // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
   saveLibraryAccount(session.auth);
   const unlocked = await tinycloud.vault.unlock();
   if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
-  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
+  // A new account has no encryption network yet: set it up now, so its first link is saved. An account that has one is asked nothing.
+  const networkSetup = createNetworkSetup(tinycloud, session, (message) => { status.textContent = message; });
+  try {
+    await networkSetup.ensure();
+  } catch (error) {
+    if (error instanceof NetworkSetupDeclinedError) {
+      // Declined: this is a sign-in that did not complete, so a reload shows a clean first sign-in.
+      await endSessionHere(tinycloud);
+      throw error;
+    }
+    // Anything else (the node not answering) leaves the library to show its own state, and the first save asks again.
+  }
+  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), historyLock: historyLock(tinycloud, session), networkSetup, config };
   const chromeScope = document.createElement("div");
   (root as HTMLElement).replaceChildren(chromeScope, view);
   void import("./sender-chrome.js").then(({ mountSenderChrome }) => {

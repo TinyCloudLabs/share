@@ -21,7 +21,7 @@ const calls = vi.hoisted(() => ({
 
 vi.mock("../src/share/openkey-session.js", () => ({
   authenticateWithOpenKey: async () => ({ address: "0x1234567890abcdef1234567890abcdef12345678", openkey: { signOut: calls.openkeySignOut, disconnect: calls.disconnect }, auth: {} }),
-  createTinyCloudClient: async () => ({ vault: { unlock: async () => ({ ok: true, data: undefined }) }, signOut: calls.tinycloudSignOut, spaceId: "applications" }),
+  createTinyCloudClient: async () => ({ vault: { unlock: async () => ({ ok: true, data: undefined }) }, signOut: calls.tinycloudSignOut, hasPermissions: () => false, spaceId: "applications" }),
   MAX_SHARE_FILE_BYTES: 100 * 1024 * 1024,
   SHARE_APPLICATION_PREFIX: "xyz.tinycloud.share/",
   SHARE_APPLICATION_SPACE: "applications",

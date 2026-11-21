@@ -278,7 +278,10 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     const seen: string[] = [];
     await signInWithManifest({ manifest: (address) => { seen.push(address); return APP_MANIFEST; }, config: CONFIG });
     expect(seen).toEqual(["0x0000000000000000000000000000000000000000", SENDER.address]);
-    expect(shareManifest(SENDER.address).permissions).toContainEqual(expect.objectContaining({ path: ownerEncryptionNetwork(SENDER.address) }));
+    const permissions = shareManifest(SENDER.address).permissions!;
+    expect(permissions).toEqual(expect.arrayContaining(pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: SENDER.address }) })));
+    expect(permissions.some((entry) => entry.path.toLowerCase() === ownerEncryptionNetwork(SENDER.address))).toBe(false);
+    expect(permissions.some((entry) => entry.actions.includes("network.create"))).toBe(false);
   });
 
   it("hosts the account space first, then each named space once, and returns the ids", async () => {
