@@ -185,6 +185,8 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
   // A session saved before Share stopped asking for the whole encryption network still holds it, and the SDK restores it as is.
   // It is not kept: this device is signed out and the person signs in again, which asks for the current set only.
+  // OpenKey is not asked to stop a renewal here because none can exist: such a session predates the share/-only sign-in, and
+  // only that sign-in asks for a renewal, whose restores re-issue its own share/-only grant.
   if (holdsWholeNetworkAccess(tinycloud, session.address)) {
     await endSessionHere(tinycloud);
     throw new StaleSessionError();
@@ -202,6 +204,9 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   } catch (error) {
     if (error instanceof NetworkSetupDeclinedError) {
       // Declined: this is a sign-in that did not complete, so a reload shows a clean first sign-in.
+      // Residual, accepted: if the owner left renewal on, OpenKey keeps that renewal (share/ decrypt) for a session key this
+      // device has now forgotten, as after an unconfirmed Sign out. Stopping it needs OpenKey's confirm window, so it is not
+      // asked here; it ends at its limit or under Renewing permissions in OpenKey settings.
       await endSessionHere(tinycloud);
       throw error;
     }
