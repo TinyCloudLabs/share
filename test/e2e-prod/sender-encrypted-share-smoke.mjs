@@ -392,13 +392,29 @@ try {
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 300);
   if (report.rateLimited) report.error = scrub(`HTTP 429 from ${report.rateLimitedAt.origin} at ${report.rateLimitedAt.stage}`);
-  report.pendingRequests = pending();
-  report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
-  report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
-  const pages = await browser?.pages().catch(() => []) ?? [];
-  const senderPage = pages.find((page) => page.url().startsWith(SHARE));
-  // Capture only: what the recipient's page showed when the run stopped. Everything goes through scrub().
-  if (recipientPage !== undefined) {
+  // Capture only. Each step runs alone, ends within 5 s and cannot throw, so the error above and the report
+  // line always print; a step that fails is named in `report.captureError`. Everything goes through scrub().
+  const capture = async (what, step) => {
+    let timer;
+    try {
+      await Promise.race([step(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), 5_000); })]);
+    } catch (failure) {
+      (report.captureError ??= []).push(scrub(`${what}: ${failure instanceof Error ? failure.message : String(failure)}`).slice(0, 160));
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  // A tab without a frame (closing, or not yet attached) throws on url(); it is skipped.
+  const urlOf = (page) => { try { return page.url(); } catch { return ""; } };
+  let pages = [];
+  await capture("pending requests", () => { report.pendingRequests = pending(); });
+  await capture("requests", () => {
+    report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
+    report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
+  });
+  await capture("pages", async () => { pages = await browser?.pages() ?? []; });
+  await capture("recipient page", async () => {
+    if (recipientPage === undefined) return;
     const shown = await recipientPage.evaluate(() => document.body?.innerText ?? "").catch(() => "");
     const where = (url) => { try { const parsed = new URL(url); return scrub(`${parsed.origin}${parsed.pathname}`); } catch { return "(unreadable)"; } };
     report.recipientPage = {
@@ -407,8 +423,11 @@ try {
       staticLoaded: staticOk.recipient ?? 0,
       requests: requests.filter((entry) => entry.phase === "recipient" && entry.method !== undefined).slice(-25).map(({ stage: at, method, origin, path, status, error, atMs }) => ({ stage: at, method, origin, path, status, error, atMs })),
     };
-  }
-  report.pageStatus = scrub(await senderPage?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
+  });
+  await capture("sender page", async () => {
+    const senderPage = pages.find((page) => urlOf(page).startsWith(SHARE));
+    report.pageStatus = scrub(await senderPage?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
+  });
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
   }
