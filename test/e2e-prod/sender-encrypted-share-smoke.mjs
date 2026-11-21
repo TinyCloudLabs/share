@@ -84,7 +84,7 @@ function track(page, phase) {
     if (opened === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
-    if (isStatic(url) && outcome.error === undefined && outcome.status < 400) return undefined;
+    if (isStatic(url) && outcome.error === undefined && outcome.status < 400) { staticOk[phase] = (staticOk[phase] ?? 0) + 1; return undefined; }
     const entry = { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, durationMs: Date.now() - opened.started, ...outcome };
     requests.push(entry);
     return entry;
@@ -156,7 +156,7 @@ async function approveUntil(page, done, counter, timeout, elevated = null) {
     if (report.elevatedRefused) throw new Error(`OpenKey's extra warning was not clicked: ${report.elevatedRefused.reason}`);
     if (await page.evaluate(done).catch(() => false)) return;
     const copy = await page.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`).catch(() => "");
-    if (FAILURE_COPY.test(copy)) { report.shareCopy = copy.replace(/\s+/g, " ").trim().slice(0, 200); throw new Error("Share showed its failure copy"); }
+    if (FAILURE_COPY.test(copy)) { report.shareCopy = scrub(copy.replace(/\s+/g, " ").trim()).slice(0, 200); throw new Error("Share showed its failure copy"); }
     for (const frame of page.frames().filter((candidate) => candidate.url().startsWith(OPENKEY))) {
       const alert = await frame.evaluate(() => [...document.querySelectorAll("[role=alert]")].map((node) => node.textContent ?? "").join(" ").trim()).catch(() => "");
       if (alert) { report.openKeyAlert = scrub(alert).replace(/\s+/g, " ").slice(0, 200); throw new Error("OpenKey showed an error"); }
@@ -207,7 +207,8 @@ async function submitCode(page, code) {
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "share-encrypted-smoke-"));
-let browser; let server; let pending = () => [];
+let browser; let server; let pending = () => []; let recipientPage;
+const staticOk = {};
 try {
   // GitHub's Ubuntu runners block the unprivileged user namespaces Chrome's sandbox needs; the
   // runner is disposable and visits only production sites.
@@ -314,6 +315,7 @@ try {
   assert(ADDRESSED_LINK.test(link), "the copied link is not an addressed Share link");
   const recipientContext = await browser.createBrowserContext();
   const recipient = await recipientContext.newPage();
+  recipientPage = recipient;
   const recipientPending = track(recipient, "recipient");
   pending = () => [...senderPending(), ...recipientPending()];
   const openStart = Date.now();
@@ -321,6 +323,11 @@ try {
 
   // A code is requested only by this click, never on load (mail scanners open links).
   setStage("recipient-code");
+  // The link reader shows "Open this link" and fetches nothing until Open is pressed (src/main.ts:65).
+  const gate = await until(() => recipient.$(".link-confirm-action, .claim-request-code"), 120_000, "the recipient's Open or code button");
+  const openShown = await gate.evaluate((node) => node.classList.contains("link-confirm-action"));
+  report.openConfirm = openShown ? "shown" : "absent";
+  if (openShown) await gate.click();
   await recipient.waitForSelector(".claim-request-code", { timeout: 120_000 });
   const earlier = await seenMail(recipientInbox);
   await recipient.click(".claim-request-code");
@@ -349,6 +356,17 @@ try {
   report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
   const pages = await browser?.pages().catch(() => []) ?? [];
   const senderPage = pages.find((page) => page.url().startsWith(SHARE));
+  // Capture only: what the recipient's page showed when the run stopped. Everything goes through scrub().
+  if (recipientPage !== undefined) {
+    const shown = await recipientPage.evaluate(() => document.body?.innerText ?? "").catch(() => "");
+    const where = (url) => { try { const parsed = new URL(url); return scrub(`${parsed.origin}${parsed.pathname}`); } catch { return "(unreadable)"; } };
+    report.recipientPage = {
+      text: scrub(shown.replace(/\s+/g, " ").trim()).slice(0, 400),
+      frames: recipientPage.frames().map((frame) => where(frame.url())).slice(0, 8),
+      staticLoaded: staticOk.recipient ?? 0,
+      requests: requests.filter((entry) => entry.phase === "recipient" && entry.method !== undefined).slice(-25).map(({ stage: at, method, origin, path, status, error, atMs }) => ({ stage: at, method, origin, path, status, error, atMs })),
+    };
+  }
   report.pageStatus = scrub(await senderPage?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
