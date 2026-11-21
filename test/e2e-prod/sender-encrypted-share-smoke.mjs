@@ -41,8 +41,8 @@ const MAX_SHARE_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SHARE_PROMPTS ?? 1)
 // What OpenKey's extra warning (TC-2927) must show at sign-in: the same request as sender-signin-smoke.mjs.
 const ELEVATED_SIGN_IN = {
   site: new URL(SHARE).host,
-  cards: ["Unlock all your encrypted data", "Unlock encrypted items in a folder named share"],
-  required: ["Unlock all your encrypted data"],
+  cards: ["Unlock encrypted items in a folder named share"],
+  required: ["Unlock encrypted items in a folder named share"],
 };
 // An addressed link is /s/<26 base32 chars>#v=4&k=<key>; a link-only share does not look like this.
 const ADDRESSED_LINK = /^https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&k=\S+$/;
@@ -53,7 +53,11 @@ let recipientInbox;
 const nonce = `tc-share-enc-smoke-${randomBytes(6).toString("hex")}`;
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+async function sleep(ms) {
+  stopIfRateLimited();
+  await new Promise((done) => setTimeout(done, ms));
+  stopIfRateLimited();
+}
 
 // One run makes at most two throwaway inboxes: the sender's (its OpenKey account) and the recipient's.
 // A third is refused before mail.tm is called.
@@ -69,9 +73,43 @@ const deleteBoth = async () => { const { deleted, total } = await deleteInboxes(
 deleteInboxesOnStop();
 
 const report = { type: "tinycloud.share/sender-encrypted-share-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
+report.rateLimited = false;
 const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
+
+// A smoke file's name is stored in the owner's space as the share's object key (share/<id>/<name>), so the
+// fixed `tcqa-` prefix marks the objects a run makes. The inboxes carry the same prefix (mail-tm.mjs).
+const SMOKE_FILE = "tcqa-share-encrypted-smoke.md";
+
+// Any HTTP 429, from Share, OpenKey, a TinyCloud service or mail.tm, stops the run at once with no retry:
+// the browser closes (which ends any wait on a page), every later wait throws, mail polling is aborted and
+// mail.tm calls are refused so mail-tm.mjs cannot retry. The inboxes are still deleted, once, in `finally`.
+const MAIL_TM_ORIGIN = "https://api.mail.tm";
+const stopMail = new AbortController();
+let cleaning = false;
+let browserClosing;
+function stopIfRateLimited() {
+  if (report.rateLimited) throw new Error(`HTTP 429 from ${report.rateLimitedAt.origin}`);
+}
+function rateLimitedBy(origin) {
+  if (report.rateLimited) return;
+  report.rateLimited = true;
+  report.rateLimitedAt = { stage, origin };
+  stopMail.abort(new Error("HTTP 429"));
+  browserClosing = browser?.close().catch(() => undefined);
+}
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const origin = new URL(typeof input === "string" || input instanceof URL ? input : input.url).origin;
+  if (origin !== MAIL_TM_ORIGIN) return realFetch(input, init);
+  if (report.rateLimited && !cleaning) return new Response(null, { status: 400 });
+  const response = await realFetch(input, init);
+  if (response.status !== 429) return response;
+  rateLimitedBy(origin);
+  // Not a 429 to mail-tm.mjs, which retries those.
+  return new Response(null, { status: 400 });
+};
 
 const isStatic = (url) => /\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
 
@@ -84,11 +122,12 @@ function track(page, phase) {
     if (opened === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
-    if (isStatic(url) && outcome.error === undefined && outcome.status < 400) return undefined;
+    if (isStatic(url) && outcome.error === undefined && outcome.status < 400) { staticOk[phase] = (staticOk[phase] ?? 0) + 1; return undefined; }
     const entry = { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, durationMs: Date.now() - opened.started, ...outcome };
     requests.push(entry);
     return entry;
   };
+  page.on("response", (response) => { if (response.status() === 429) rateLimitedBy(new URL(response.url()).origin); });
   page.on("requestfinished", async (request) => {
     const response = request.response();
     const entry = record(request, { status: response?.status() ?? 0 });
@@ -156,7 +195,7 @@ async function approveUntil(page, done, counter, timeout, elevated = null) {
     if (report.elevatedRefused) throw new Error(`OpenKey's extra warning was not clicked: ${report.elevatedRefused.reason}`);
     if (await page.evaluate(done).catch(() => false)) return;
     const copy = await page.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`).catch(() => "");
-    if (FAILURE_COPY.test(copy)) { report.shareCopy = copy.replace(/\s+/g, " ").trim().slice(0, 200); throw new Error("Share showed its failure copy"); }
+    if (FAILURE_COPY.test(copy)) { report.shareCopy = scrub(copy.replace(/\s+/g, " ").trim()).slice(0, 200); throw new Error("Share showed its failure copy"); }
     for (const frame of page.frames().filter((candidate) => candidate.url().startsWith(OPENKEY))) {
       const alert = await frame.evaluate(() => [...document.querySelectorAll("[role=alert]")].map((node) => node.textContent ?? "").join(" ").trim()).catch(() => "");
       if (alert) { report.openKeyAlert = scrub(alert).replace(/\s+/g, " ").slice(0, 200); throw new Error("OpenKey showed an error"); }
@@ -207,7 +246,8 @@ async function submitCode(page, code) {
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "share-encrypted-smoke-"));
-let browser; let server; let pending = () => [];
+let browser; let server; let pending = () => []; let recipientPage;
+const staticOk = {};
 try {
   // GitHub's Ubuntu runners block the unprivileged user namespaces Chrome's sandbox needs; the
   // runner is disposable and visits only production sites.
@@ -256,6 +296,7 @@ try {
   setStage("openkey-otp");
   const otp = await openKeyCode(senderInbox, {
     onMessage: (message, value) => { report.otp = { messages: (report.otp?.messages ?? 0) + 1, codeFound: value !== undefined, mailAgeSeconds: Math.round((Date.now() - Date.parse(message.createdAt ?? 0)) / 1000), afterMs: since() }; },
+    signal: stopMail.signal,
   });
   const codeField = await until(() => connect.$("input[type=text], input[inputmode=numeric], input[autocomplete=one-time-code]"), 30_000, "OpenKey's code field");
   await codeField.type(otp);
@@ -295,10 +336,10 @@ try {
   // "Only this person": the share is addressed to the second inbox, so its file is encrypted to the
   // share's key and the owner signs the policy roots. Nothing is mailed: the link is copied.
   setStage("share-create-encrypted");
-  writeFileSync(join(temporary, "smoke.md"), `# Share encrypted smoke\n\n${nonce}\n`);
+  writeFileSync(join(temporary, SMOKE_FILE), `# Share encrypted smoke\n\n${nonce}\n`);
   await sender.$eval('input[name="recipient"][value="exactEmail"]', (input) => input.click());
   await sender.type('input[name="recipient-value"]', recipientInbox.address);
-  await (await sender.$('input[name="document"]')).uploadFile(join(temporary, "smoke.md"));
+  await (await sender.$('input[name="document"]')).uploadFile(join(temporary, SMOKE_FILE));
   const shareStart = Date.now();
   await sender.click("button.create-link-button");
   await approveUntil(sender, () => document.querySelector(".composer-status")?.dataset.state === "created", "share", 180_000);
@@ -314,6 +355,7 @@ try {
   assert(ADDRESSED_LINK.test(link), "the copied link is not an addressed Share link");
   const recipientContext = await browser.createBrowserContext();
   const recipient = await recipientContext.newPage();
+  recipientPage = recipient;
   const recipientPending = track(recipient, "recipient");
   pending = () => [...senderPending(), ...recipientPending()];
   const openStart = Date.now();
@@ -321,6 +363,11 @@ try {
 
   // A code is requested only by this click, never on load (mail scanners open links).
   setStage("recipient-code");
+  // The link reader shows "Open this link" and fetches nothing until Open is pressed (src/main.ts:65).
+  const gate = await until(() => recipient.$(".link-confirm-action, .claim-request-code"), 120_000, "the recipient's Open or code button");
+  const openShown = await gate.evaluate((node) => node.classList.contains("link-confirm-action"));
+  report.openConfirm = openShown ? "shown" : "absent";
+  if (openShown) await gate.click();
   await recipient.waitForSelector(".claim-request-code", { timeout: 120_000 });
   const earlier = await seenMail(recipientInbox);
   await recipient.click(".claim-request-code");
@@ -330,6 +377,7 @@ try {
     used: earlier,
     timeout: 180_000,
     failure: "no recipient code arrived in the test inbox",
+    signal: stopMail.signal,
     onMessage: (message, value) => { report.recipientCode = { messages: (report.recipientCode?.messages ?? 0) + 1, codeFound: value !== undefined, mailAgeSeconds: Math.round((Date.now() - Date.parse(message.createdAt ?? 0)) / 1000), afterMs: since() }; },
   });
   assert(await submitCode(recipient, code), "the recipient's code field did not take the code");
@@ -344,12 +392,44 @@ try {
   setStage("done");
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 300);
-  report.pendingRequests = pending();
-  report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
-  report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
-  const pages = await browser?.pages().catch(() => []) ?? [];
-  const senderPage = pages.find((page) => page.url().startsWith(SHARE));
-  report.pageStatus = scrub(await senderPage?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
+  if (report.rateLimited) report.error = scrub(`HTTP 429 from ${report.rateLimitedAt.origin} at ${report.rateLimitedAt.stage}`);
+  await Promise.race([browserClosing, new Promise((done) => setTimeout(done, 10_000))]);
+  // Capture only. Each step runs alone, ends within 5 s and cannot throw, so the error above and the report
+  // line always print; a step that fails is named in `report.captureError`. Everything goes through scrub().
+  const capture = async (what, step) => {
+    let timer;
+    try {
+      await Promise.race([step(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), 5_000); })]);
+    } catch (failure) {
+      (report.captureError ??= []).push(scrub(`${what}: ${failure instanceof Error ? failure.message : String(failure)}`).slice(0, 160));
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  // A tab without a frame (closing, or not yet attached) throws on url(); it is skipped.
+  const urlOf = (page) => { try { return page.url(); } catch { return ""; } };
+  let pages = [];
+  await capture("pending requests", () => { report.pendingRequests = pending(); });
+  await capture("requests", () => {
+    report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
+    report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
+  });
+  await capture("pages", async () => { pages = await browser?.pages() ?? []; });
+  await capture("recipient page", async () => {
+    if (recipientPage === undefined) return;
+    const shown = await recipientPage.evaluate(() => document.body?.innerText ?? "").catch(() => "");
+    const where = (url) => { try { const parsed = new URL(url); return scrub(`${parsed.origin}${parsed.pathname}`); } catch { return "(unreadable)"; } };
+    report.recipientPage = {
+      text: scrub(shown.replace(/\s+/g, " ").trim()).slice(0, 400),
+      frames: recipientPage.frames().map((frame) => where(frame.url())).slice(0, 8),
+      staticLoaded: staticOk.recipient ?? 0,
+      requests: requests.filter((entry) => entry.phase === "recipient" && entry.method !== undefined).slice(-25).map(({ stage: at, method, origin, path, status, error, atMs }) => ({ stage: at, method, origin, path, status, error, atMs })),
+    };
+  });
+  await capture("sender page", async () => {
+    const senderPage = pages.find((page) => urlOf(page).startsWith(SHARE));
+    report.pageStatus = scrub(await senderPage?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
+  });
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
   }
@@ -357,14 +437,16 @@ try {
   report.failedRequests = requests.filter((entry) => entry.error !== undefined || entry.status >= 400 || entry.pageerror !== undefined).slice(-25);
   if (report.result !== "passed") report.classification = classify(report);
   report.timingsMs.total = since();
+  cleaning = true;
   await deleteBoth();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
-  rmSync(temporary, { recursive: true, force: true });
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
 /** Name the failure class so a single run's report says whose problem it is. */
-function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert, shareCopy }) {
+function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert, shareCopy, rateLimited, rateLimitedAt }) {
+  if (rateLimited) return `rate-limited: HTTP 429 from ${rateLimitedAt.origin} at ${rateLimitedAt.stage}`;
   const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "inbox") return "mail-delivery: a test inbox could not be made";

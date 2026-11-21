@@ -92,6 +92,19 @@ async function mapBounded<T, R>(items: readonly T[], limit: number, task: (item:
   return results;
 }
 
+/** The vault would not decrypt: the grant that reads the saved shares is not there. Not the same as a record that is missing or damaged. */
+export class HistoryLockedError extends Error {
+  constructor() { super("sender-history-locked"); }
+}
+
+function decryptRefused(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = Reflect.get(error, "code");
+  if (code === "PERMISSION_DENIED") return true;
+  const cause = Reflect.get(error, "cause");
+  return code === "DECRYPTION_FAILED" && typeof cause === "object" && cause !== null && Reflect.get(cause, "code") === "DECRYPT_DENIED";
+}
+
 /**
  * IDataVaultService already encrypts values in the browser's network Vault.
  *
@@ -156,6 +169,9 @@ export class EncryptedSenderShareRecordStorage implements SenderShareRecordStora
 
   hasIndex(): boolean { return this.indexed; }
 
+  /** The ids read under a grant are not kept past it. */
+  forgetIndex(): void { this.index.clear(); this.indexed = false; }
+
   /** Share ids with their `registeredAt`, in listing order. */
   indexEntries(): readonly (readonly [string, number])[] { return [...this.index]; }
 
@@ -180,10 +196,13 @@ export class EncryptedSenderShareRecordStorage implements SenderShareRecordStora
     try { await run; } finally { if (this.writing.get(shareId) === settled) this.writing.delete(shareId); }
   }
 
-  /** One vault GET and decrypt. Unreadable or malformed entries are undefined; thrown errors propagate. */
+  /** One vault GET and decrypt. Unreadable or malformed entries are undefined; a refused decrypt and thrown errors propagate. */
   private async read(shareId: string): Promise<SenderShareRecord | undefined> {
     const result = await this.vault.get<VaultValue>(recordKey(shareId));
-    if (!result.ok) return undefined;
+    if (!result.ok) {
+      if (decryptRefused(result.error)) throw new HistoryLockedError();
+      return undefined;
+    }
     const value = unwrap(result.data);
     return isRecord(value) ? value : undefined;
   }
@@ -335,6 +354,9 @@ export class SenderHistoryRepository {
     const nextOffset = offset + selectedIds.length;
     return { items, truncated: nextOffset < ordered.length, ...(nextOffset < ordered.length ? { nextCursor: String(nextOffset) } : {}) };
   }
+
+  /** The grant that reads the saved shares has ended: the ids read under it are dropped. */
+  forgetIndex(): void { this.records.forgetIndex(); }
 
   static keyFor(record: SenderShareRecord): string { return recordKey(record.shareId); }
 }
