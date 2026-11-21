@@ -1,5 +1,5 @@
 /**
- * The library sign-in's renewal lease. When the owner leaves renewal on in OpenKey's sign-in window, OpenKey signs
+ * The library sign-in's renewal lease. When the owner turns renewal on in OpenKey's sign-in window, OpenKey signs
  * a lease for the session's grant and returns it beside the signed session. It records the lease so the owner's
  * stops can end it, but it does not send it to the node: right after sign-in Share checks it against the session
  * record the SDK just saved, has the session's node admit it, and only then keeps it as the session's receipt

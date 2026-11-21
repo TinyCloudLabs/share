@@ -196,7 +196,7 @@ describe("the sender sign-in wall (booting the real app)", () => {
     expect(calls.reopens).toBe(0);
   });
 
-  it("forgets the account at Sign out, and a resumed tab with no OpenKey sign-in says Share alone signed out", async () => {
+  it("forgets the account at Sign out, and a resumed tab signs out of OpenKey too (test-ruling: TC-2933 share test/library-session.test.ts resumed-tab sign-out notice)", async () => {
     await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
     sessionStorage.clear();
     const root = await boot();
@@ -205,7 +205,7 @@ describe("the sender sign-in wall (booting the real app)", () => {
     root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
     await vi.waitFor(() => expect(root.querySelector(".auth-shell")).not.toBeNull());
     expect(words(root)).toEqual(["One key, your files", "Continue with OpenKey"]);
-    expect(root.querySelector(".auth-status")?.textContent).toBe("Signed out of Share. To sign out of OpenKey too, use openkey.so.");
+    expect(root.querySelector(".auth-status")?.textContent).toBe("Signed out of Share in this browser. Share's access won't renew.");
     expect(localStorage.getItem(`${LIBRARY_SESSION_PREFIX}openkey-account`)).toBeNull();
   });
 });

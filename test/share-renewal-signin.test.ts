@@ -3,7 +3,7 @@ import { OpenKey } from "@openkey/sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTinyCloudClient, signInWithManifest, SHARE_MANIFEST_SCOPE, shareManifest, SignInOptionError, authenticateWithOpenKey } from "../src/share/openkey-session.js";
 import { forgetLibraryAccount, LIBRARY_SESSION_PREFIX, savedLibraryAccount } from "../src/share/library-session.js";
-import { hasRenewalReceipt, loadRenewalReceipt, saveRenewalReceipt, SIGN_IN_RENEWAL_ASK } from "../src/share/renewal-store.js";
+import { hasRenewalReceipt, loadRenewalReceipt, RENEWAL_RESTORE_UNAVAILABLE, saveRenewalReceipt, SIGN_IN_RENEWAL_ASK } from "../src/share/renewal-store.js";
 
 const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const PREFIX = LIBRARY_SESSION_PREFIX;
@@ -20,7 +20,9 @@ const state = vi.hoisted(() => ({
   answer: undefined as undefined | (() => Promise<unknown>),
   signIns: 0,
   restores: [] as Array<{ lease: string; address: string }>,
-  restoreResult: "restored" as "restored" | "throws",
+  cleanups: 0,
+  signedOut: 0,
+  restoreResult: "restored" as "restored" | "throws" | "revoked" | "expired-status" | "failed-status" | "lease-expired",
   admitted: [] as Array<Record<string, unknown>>,
   leaseToRestore: null as null | { address: string; leaseAuthorization: string },
 }));
@@ -47,12 +49,18 @@ vi.mock("@tinycloud/web-sdk", () => ({
       const result = await openkey.client.authorizeTinyCloud({ protocolVersion: 1, siwe: ASKED, jwk: {} }, { mode: openkey.mode });
       return { address: ADDRESS, siwe: result.signedMessage };
     }
-    async restoreSessionWithRenewal(lease: string, address: string): Promise<{ status: string; session: { address: string; siwe: string } }> {
+    async restoreSessionWithRenewal(lease: string, address: string): Promise<{ status: string; session?: { address: string; siwe: string }; error?: Error }> {
       state.restores.push({ lease, address });
-      if (state.restoreResult === "throws") throw new Error("renewal-authority-inactive");
+      if (state.restoreResult === "throws") throw new Error("fetch failed");
+      if (state.restoreResult === "revoked") throw Object.assign(new Error("inactive"), { code: "RENEWAL_AUTHORITY_INACTIVE" });
+      if (state.restoreResult === "lease-expired") throw Object.assign(new Error("expired"), { code: "RENEWAL_LEASE_EXPIRED" });
+      if (state.restoreResult === "expired-status") return { status: "expired" };
+      if (state.restoreResult === "failed-status") return { status: "restore-failed", error: new Error("503") };
       return { status: "restored", session: { address, siwe: "restored-siwe" } };
     }
-    async signOut(): Promise<void> {}
+    cleanups = 0;
+    cleanup(): void { state.cleanups += 1; }
+    async signOut(): Promise<void> { state.signedOut += 1; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { return name; }
   },
 }));
@@ -78,6 +86,8 @@ beforeEach(() => {
   state.authorized.length = 0;
   state.signIns = 0;
   state.restores.length = 0;
+  state.cleanups = 0;
+  state.signedOut = 0;
   state.admitted.length = 0;
   state.restoreResult = "restored";
   state.leaseToRestore = null;
@@ -86,11 +96,11 @@ beforeEach(() => {
 });
 
 describe("the library sign-in asks OpenKey for a renewal lease", () => {
-  it("sends the 90-day standing ask and lets the owner change the expiry", async () => {
+  it("sends the 90-day ask (no purpose, so the box starts unticked) and lets the owner change the expiry", async () => {
     await createTinyCloudClient(await authenticateWithOpenKey(() => undefined), CONFIG, () => undefined);
 
     expect(state.authorized[0]).toMatchObject({ protocolVersion: 1, renewal: SIGN_IN_RENEWAL_ASK });
-    expect(SIGN_IN_RENEWAL_ASK).toEqual({ version: 1, leaseLifetimeSeconds: 90 * 86_400, purpose: "standing" });
+    expect(SIGN_IN_RENEWAL_ASK).toEqual({ version: 1, leaseLifetimeSeconds: 90 * 86_400 });
     const openkey = state.clients[0]!.config.openkey as { mode: string; expiryChangeable: boolean; maxExpiresAt: () => number };
     expect(openkey.mode).toBe("iframe");
     expect(openkey.expiryChangeable).toBe(true);
@@ -139,7 +149,7 @@ describe("with OpenKey's leases off (no lease comes back)", () => {
   });
 });
 
-describe("when the owner leaves renewal on", () => {
+describe("when the owner turns renewal on", () => {
   it("hands the lease OpenKey signed to its checks and admission, with the account and the time it arrived", async () => {
     state.answer = signed({ renewalChoice: "leased", renewal: LEASE });
     const before = performance.now();
@@ -167,14 +177,45 @@ describe("a reload past the signed end", () => {
     await result.dispose();
   });
 
-  it("signs in afresh when the node no longer renews it", async () => {
-    saveRenewalReceipt(PREFIX, ADDRESS, LEASE);
-    state.leaseToRestore = { address: ADDRESS, leaseAuthorization: "lease-authorization" };
-    state.restoreResult = "throws";
-    await createTinyCloudClient(await authenticateWithOpenKey(() => undefined), CONFIG, () => undefined);
+  it("keeps the receipt and the saved session on a transient failure, and the next load tries the lease again", async () => {
+    for (const failure of ["throws", "failed-status"] as const) {
+      saveRenewalReceipt(PREFIX, ADDRESS, LEASE);
+      state.leaseToRestore = { address: ADDRESS, leaseAuthorization: "lease-authorization" };
+      state.restoreResult = failure;
+      state.restores.length = 0;
+      state.signIns = 0;
+      await expect(createTinyCloudClient(await authenticateWithOpenKey(() => undefined), CONFIG, () => undefined)).rejects.toThrow(RENEWAL_RESTORE_UNAVAILABLE);
 
+      expect(state.restores).toHaveLength(1);
+      expect(state.signIns).toBe(0);
+      expect(state.authorized).toHaveLength(0);
+      expect(hasRenewalReceipt(PREFIX)).toBe(true);
+      // The saved session is not signed out (that would clear it): only the attempt's own client is let go.
+      expect(state.signedOut).toBe(0);
+    }
+    expect(state.cleanups).toBe(2);
+    // The next load: the network is back, and the lease restores the session with no approval.
+    state.restoreResult = "restored";
+    state.restores.length = 0;
+    await createTinyCloudClient(await authenticateWithOpenKey(() => undefined), CONFIG, () => undefined);
     expect(state.restores).toHaveLength(1);
-    expect(state.signIns).toBe(1);
+    expect(state.signIns).toBe(0);
+    expect(hasRenewalReceipt(PREFIX)).toBe(true);
+  });
+
+  it("drops the receipt and signs in afresh only when the node says the lease ended", async () => {
+    for (const answer of ["revoked", "lease-expired", "expired-status"] as const) {
+      saveRenewalReceipt(PREFIX, ADDRESS, LEASE);
+      state.leaseToRestore = { address: ADDRESS, leaseAuthorization: "lease-authorization" };
+      state.restoreResult = answer;
+      state.restores.length = 0;
+      state.signIns = 0;
+      await createTinyCloudClient(await authenticateWithOpenKey(() => undefined), CONFIG, () => undefined);
+
+      expect(state.restores).toHaveLength(1);
+      expect(state.signIns).toBe(1);
+      expect(hasRenewalReceipt(PREFIX)).toBe(false);
+    }
   });
 
   it("does not try a lease when none is kept", async () => {

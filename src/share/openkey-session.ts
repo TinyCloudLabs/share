@@ -10,8 +10,8 @@ import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, t
 import { trackWalletApproval } from "./wallet-approval.js";
 import { SIGN_IN_NARROWED } from "./sender-failure.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
-import { LIBRARY_SESSION_PREFIX, markOpenKeySignedInHere } from "./library-session.js";
-import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
+import { LIBRARY_SESSION_PREFIX } from "./library-session.js";
+import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, RENEWAL_RESTORE_UNAVAILABLE, renewalEnded, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -340,7 +340,7 @@ export interface SignInWithManifestOptions extends ManifestScope {
   readonly versionedSignIn?: boolean;
   /**
    * With `versionedSignIn` and `persistSession`: ask OpenKey to offer the owner automatic renewal for up to 90 days
-   * (OpenKey shows its renewal box). When the owner leaves it on, the lease is checked, admitted by the session's node and
+   * (OpenKey shows its renewal box, unticked for sensitive grants). When the owner ticks it, the lease is checked, admitted by the session's node and
    * kept with the saved session, and a reload past the signed end restores through it. Without a lease the sign-in is a
    * finite one. Default false.
    */
@@ -579,12 +579,21 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     // Past its signed end, a saved session with a receipt that checks out renews through its lease: no approval, no OpenKey window.
     // The renewal code (and the lease-checking parts of the SDK it pulls in) loads only when a receipt is kept or a lease came back: a dynamic import by design.
     const leaseRestore = renewalPrefix === undefined || !hasRenewalReceipt(renewalPrefix) ? null : await (await import("./renewal-receipt.js")).renewalRestoreFor(renewalPrefix);
-    if (leaseRestore !== null) {
+    if (renewalPrefix !== undefined && leaseRestore !== null) {
+      let failure: unknown;
       try {
         const renewed = await tinycloud.restoreSessionWithRenewal(leaseRestore.leaseAuthorization, leaseRestore.address);
         if (renewed.status === "restored") signedSession = renewed.session;
-      } catch {
-        // The node no longer renews it (stopped, expired or unreachable): sign in afresh below.
+        // "expired" is the SDK's own finding that the lease does not extend the session; a "restore-failed" carries the cause.
+        else failure = renewed.status === "expired" ? { code: "RENEWAL_LEASE_EXPIRED" } : renewed.status === "restore-failed" ? renewed.error ?? new Error("restore-failed") : undefined;
+      } catch (error) {
+        failure = error;
+      }
+      if (signedSession === undefined) {
+        // Only the node's answer that the lease ended (expired, revoked or stopped) drops the receipt and signs in afresh below.
+        // A transient failure keeps the receipt and the saved session, and the sign-in screen offers Continue: the next load retries.
+        if (failure !== undefined && !renewalEnded(failure)) throw new Error(RENEWAL_RESTORE_UNAVAILABLE);
+        clearRenewalReceipt(renewalPrefix);
       }
     }
     try {
@@ -621,7 +630,12 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     };
     return { tinycloud, session, spaces, sessionExpiresAt, preparePermissionRequest, detach, dispose };
   } catch (error) {
-    if (dispose !== undefined) await dispose();
+    if (error instanceof Error && error.message === RENEWAL_RESTORE_UNAVAILABLE) {
+      // The lease could not be tried (no answer from the node): nothing is signed out, so the saved session and its
+      // receipt stay for the next load. Only what this attempt holds in memory is let go.
+      tinycloud?.cleanup();
+      if (opened && session !== undefined) closeOpenKeyFlows(session.openkey);
+    } else if (dispose !== undefined) await dispose();
     else if (opened && session !== undefined) closeOpenKeyFlows(session.openkey);
     throw error;
   }
@@ -734,9 +748,7 @@ export async function createTinyCloudClient(
   // Persisted under the library's own prefix for the SDK's sign-in session tier: a reload restores it, with no new
   // approval, until its signed expiry or until the sender signs out (which clears it). A revoked one is refused and
   // replaced by a fresh sign-in.
-  // Every OpenKey approval that completes here needed OpenKey's sign-in in this tab, so Share's Sign out may end it.
-  const guardApproval: ApprovalGuard = async (wait) => { const result = await wait(); markOpenKeySignedInHere(); return result; };
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS, versionedSignIn: true, renewal: true });
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS, versionedSignIn: true, renewal: true });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }

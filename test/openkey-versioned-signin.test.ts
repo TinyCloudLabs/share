@@ -159,7 +159,7 @@ describe("a versioned approval that does not give the library a usable session",
     state.answer = approve(NARROWED);
     const { error } = await failedSignIn();
 
-    expect(authFailureMessage(error)).toMatch(/needs to read and write your share library.*keep all permissions/);
+    expect(authFailureMessage(error)).toMatch(/needs all the permissions it asks for.*allow each one/);
     expect(authFailureMessage(error)).not.toBe(SENDER_FAILURE.signIn);
     // The half-made client is signed out, so nothing is saved or kept for a later restore.
     expect(state.signedOut).toBe(1);

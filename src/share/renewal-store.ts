@@ -51,8 +51,8 @@ export function clearRenewalReceipt(prefix: string, storage?: Pick<Storage, "rem
   try { (storage ?? window.localStorage).removeItem(receiptKey(prefix)); } catch { /* Blocked storage holds nothing to remove. */ }
 }
 
-/** What Share asks OpenKey to offer: renewal for up to 90 days, on by default (`standing`). */
-export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 * 60 * 60, purpose: "standing" } as const;
+/** What Share asks OpenKey to offer: renewal for up to 90 days. With no `purpose`, OpenKey's box starts unticked and the owner turns it on. */
+export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 * 60 * 60 } as const;
 
 /** The lease receipt in an `authorizeTinyCloud` result, only when the owner left renewal on (`renewalChoice: "leased"`); otherwise undefined. Unverified. */
 export function leaseFromApproval(result: unknown): unknown {
@@ -64,3 +64,17 @@ export function leaseFromApproval(result: unknown): unknown {
 export function hasRenewalReceipt(prefix: string, storage?: Pick<Storage, "getItem">): boolean {
   try { return (storage ?? window.localStorage).getItem(receiptKey(prefix)) !== null; } catch { return false; }
 }
+
+const RENEWAL_ENDED_CODES: ReadonlySet<string> = new Set(["RENEWAL_LEASE_EXPIRED", "RENEWAL_LEASE_ORIGINAL_EXPIRED", "RENEWAL_AUTHORITY_INACTIVE"]);
+
+/**
+ * Whether a failed restore through the lease is the node's own answer that the lease ended: expired or no longer active
+ * (revoked or stopped). Anything else (no network, a timeout, a 5xx) says nothing about the lease, so the receipt is kept
+ * and the next load tries again.
+ */
+export function renewalEnded(failure: unknown): boolean {
+  return typeof failure === "object" && failure !== null && "code" in failure && typeof failure.code === "string" && RENEWAL_ENDED_CODES.has(failure.code);
+}
+
+/** A restore through the lease that failed without the node saying the lease ended: nothing was changed, so the next load retries. */
+export const RENEWAL_RESTORE_UNAVAILABLE = "renewal-restore-unavailable";

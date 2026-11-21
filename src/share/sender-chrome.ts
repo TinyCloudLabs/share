@@ -1,28 +1,25 @@
 import { confirmDialog } from "./confirm-dialog.js";
-import { forgetOpenKeySignedInHere, openKeySignedInHere } from "./library-session.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 
 /**
  * TC-1583. The signed-in bar above every sender screen: who is signed in, and a
  * way out. Share saves its session on this device so a reload resumes it, so
- * what Sign out ends is that saved session, and OpenKey's sign-in when this tab
- * holds one. Nothing the account owns changes: shares stay active and nothing
- * is revoked or deleted.
+ * what Sign out ends is that saved session and OpenKey's sign-in, which stops any
+ * renewal lease OpenKey holds for it. Nothing the account owns changes: shares
+ * stay active and nothing is revoked or deleted.
  */
 
 export const SIGN_OUT_TITLE = "Sign out of Share?";
-export const SIGN_OUT_BODY = "This signs you out of Share on this device. Your shares stay active; nothing is revoked or deleted.";
+export const SIGN_OUT_BODY = "This signs you out of Share in this browser, and Share's access stops renewing. Your shares stay active and nothing is deleted.";
 export const SIGN_OUT_NEXT = "To come back you'll sign in with OpenKey again.";
-/** This tab held an OpenKey sign-in and OpenKey confirmed it ended it. */
-export const SIGNED_OUT_NOTICE = "Signed out of Share and of OpenKey in this tab.";
-/** This tab held no OpenKey sign-in (a resumed tab, usually): there was nothing of OpenKey's to end here. */
-export const SIGNED_OUT_SHARE_ONLY_NOTICE = "Signed out of Share. To sign out of OpenKey too, use openkey.so.";
-/** This tab held an OpenKey sign-in, and OpenKey did not confirm it ended it. */
-export const SIGNED_OUT_PARTIAL_NOTICE = "Signed out of Share, and its session was cleared. OpenKey didn't confirm that it ended its own sign-in, so sign out there too if this is a shared device. Your shares are unchanged.";
+/** OpenKey confirmed that it ended its sign-in, and with it any renewal lease. */
+export const SIGNED_OUT_NOTICE = "Signed out of Share in this browser. Share's access won't renew.";
+/** OpenKey did not confirm that it ended its sign-in (so a renewal may still be on). */
+export const SIGNED_OUT_PARTIAL_NOTICE = "You're signed out of Share in this browser, but OpenKey may still be renewing its access. To stop that, choose Stop renewal under Renewing permissions in OpenKey settings.";
 /** OpenKey's widget answers a sign-out in about a second; this only bounds a window that never answers. */
-export const OPENKEY_SIGN_OUT_WAIT_MS = 8_000;
+export const OPENKEY_SIGN_OUT_WAIT_MS = 5_000;
 
-/** What a sign-out ended besides Share's session. */
+/** What a sign-out ended besides Share's session. `share-only` is Courier's embedded session, which holds no OpenKey sign-in. */
 export type SignOutOutcome = "openkey-ended" | "openkey-unconfirmed" | "share-only";
 
 export interface SenderChromeOptions {
@@ -34,27 +31,24 @@ export interface SenderChromeOptions {
 
 /**
  * Ends this tab's session: the TinyCloud client's session key first (local, no
- * network the page waits on), then, only when this tab holds an OpenKey sign-in,
- * OpenKey's own sign-in through its confirm window. Whether it holds one is
- * `connectedHere` when the caller knows (Courier always connects here), else the
- * tab's mark (`openKeySignedInHere`). `openkey-ended` when OpenKey confirmed it;
- * `openkey-unconfirmed` when it could not (no window, no answer in time, or it
- * said it could not verify); `share-only` when the tab held none, so OpenKey is
- * not asked. The local session is cleared either way.
+ * network the page waits on), then OpenKey's own sign-in through its confirm
+ * window, in every tab: a tab restored from the saved session (or through a
+ * renewal lease) signed nothing in with OpenKey, but OpenKey's sign-out is what
+ * stops the leases recorded under its session. `openkey-ended` only when OpenKey
+ * confirmed it (`revoked === true`); `openkey-unconfirmed` when it could not (no
+ * window, no answer in time, or it said it could not verify). The local session
+ * is cleared either way.
  */
 export async function endSenderSession(
   options: Pick<SenderChromeOptions, "session" | "tinycloud">,
-  { connectedHere = openKeySignedInHere(), waitMs = OPENKEY_SIGN_OUT_WAIT_MS }: { readonly connectedHere?: boolean; readonly waitMs?: number } = {},
-): Promise<SignOutOutcome> {
+  { waitMs = OPENKEY_SIGN_OUT_WAIT_MS }: { readonly waitMs?: number } = {},
+): Promise<Exclude<SignOutOutcome, "share-only">> {
   try { await options.tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, even when ending the session throws. */ }
-  if (!connectedHere) return "share-only";
   let timer: ReturnType<typeof setTimeout> | undefined;
   const silent = new Promise<false>((resolve) => { timer = setTimeout(() => { options.session.openkey.disconnect(); resolve(false); }, waitMs); });
   try {
     const revoked = await Promise.race([options.session.openkey.signOut().then((answer) => answer.revoked === true), silent]);
-    if (!revoked) return "openkey-unconfirmed";
-    forgetOpenKeySignedInHere();
-    return "openkey-ended";
+    return revoked ? "openkey-ended" : "openkey-unconfirmed";
   } catch {
     return "openkey-unconfirmed";
   } finally {
@@ -62,10 +56,9 @@ export async function endSenderSession(
   }
 }
 
-const SIGNED_OUT_NOTICES: Readonly<Record<SignOutOutcome, string>> = {
+const SIGNED_OUT_NOTICES: Readonly<Record<Exclude<SignOutOutcome, "share-only">, string>> = {
   "openkey-ended": SIGNED_OUT_NOTICE,
   "openkey-unconfirmed": SIGNED_OUT_PARTIAL_NOTICE,
-  "share-only": SIGNED_OUT_SHARE_ONLY_NOTICE,
 };
 
 export function mountSenderChrome(parent: HTMLElement, options: SenderChromeOptions): HTMLElement {

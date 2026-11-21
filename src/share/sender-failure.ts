@@ -99,8 +99,8 @@ export function senderFailureMessage(error: unknown): string {
 /** The error of a sign-in the owner narrowed in OpenKey (removed a permission the library asked for). */
 export const SIGN_IN_NARROWED = "sign-in-approval-narrowed";
 
-// Draft copy, Monica words it. Says which permissions Share needs and why (OpenKey will mark them required: TC-3092).
-const SIGN_IN_NARROWED_COPY = "Share needs to read and write your share library and unlock your encrypted shares to work. Sign in again and keep all permissions.";
+// Draft copy, the copy owner words it. Says which permissions Share needs and why (OpenKey will mark them required: TC-3092).
+const SIGN_IN_NARROWED_COPY = "Share needs all the permissions it asks for, to read and change your share library and to open your encrypted shares. Sign in again and allow each one.";
 
 /**
  * TC-335. Same classification, different default. The sign-in wall renders
