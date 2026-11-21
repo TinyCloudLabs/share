@@ -281,6 +281,9 @@ export const MAX_SESSION_MS = 60 * 60 * 1000;
 export const SIGN_IN_SESSION_MS = EXPIRY.SESSION_MS;
 const DEFAULT_APP_NAME = "TinyCloud Share";
 const DEFAULT_SESSION_PREFIX = "tinycloud-share";
+/** diag: temporary. The signed session's end, for the share-expiry diagnostic. */
+export const diagnosticSession = { expiresAt: 0 };
+
 const REGISTRY_SYNC_WAIT_MS = 15_000;
 
 export interface SignInWithManifestOptions extends ManifestScope {
@@ -616,6 +619,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       if (approvalOutcome.renewal !== undefined) await (await import("./renewal-receipt.js")).admitSignInRenewal({ tcw: tinycloud, prefix: renewalPrefix, address: session?.address ?? signedSession.address, renewal: approvalOutcome.renewal, arrivedAt: approvalOutcome.arrivedAt });
     }
     const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
+    diagnosticSession.expiresAt = sessionExpiresAt; // diag: temporary
     const spaces: Record<string, string> = {};
     for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
       spaces[name] = await tinycloud.ensureOwnedSpaceHosted(name);
