@@ -322,6 +322,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   });
   const expiresAt = nativeShare.expiresAt.toISOString();
   const record = nativeBearerHistoryRecord({ share: nativeShare, path: nativePath, filename: file.name, target: { origin: node.origin, nodeAudience: node.nodeAudience } });
+  console.error("share diag end session-left-ms", diagnosticSession.expiresAt - Date.now(), "share-left-ms", Date.parse(model.expiresAt) - Date.now());
   return { url: nativeShare.url, cid: nativePath, expiresAt, delegationCid: nativeShare.delegationCid, record };
 }
 
