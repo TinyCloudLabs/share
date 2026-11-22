@@ -278,6 +278,8 @@ export default defineConfig(({ mode }) => {
     plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(userContentOrigin), artifactSandboxHtml(userContentOrigin), jsxSandbox(userContentOrigin), userContentOriginPolicy(userContentOrigin), courierFrameAncestors(env[ONE_BUILD_ENV]), courierDevNode(process.env["COURIER_DEV_NODE"])],
     build: {
       rollupOptions: {
+        // web-sdk's prebuilt entry inlines the SDK's WebAssembly as base64; its own chunk lets .gitleaks.toml name that one built file.
+        output: { manualChunks: (id) => (id.endsWith("/node_modules/@tinycloud/web-sdk/dist/index.mjs") ? "tinycloud-web-sdk" : undefined) },
         input: {
           main: fileURLToPath(new URL("index.html", import.meta.url)),
           howItWorks: fileURLToPath(new URL("how-it-works.html", import.meta.url)),

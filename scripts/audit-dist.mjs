@@ -5,10 +5,12 @@
 //   - source maps (`*.map` files or a `sourceMappingURL` comment);
 //   - a file type outside the allowlist below;
 //   - text matching a key or token pattern (printed redacted: rule, file, line);
-// then runs pinned `gitleaks dir <dir> --redact` (scripts/gitleaks.mjs).
+// then runs pinned `gitleaks dir <dir> --redact --config .gitleaks.toml` (scripts/gitleaks.mjs): the repository's
+// config, which extends the default rules, so every default rule still scans the built files.
 // A missing directory, an empty one or a gitleaks that cannot run also fails.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runGitleaks } from "./gitleaks.mjs";
 
 const EXTENSIONS = new Set([
@@ -111,7 +113,10 @@ if (findings.length > 0) {
 }
 console.log(`audit-dist: ${files} files in ${root}, no source maps, file types and patterns clean`);
 
-const status = await runGitleaks(["dir", root, "--redact", "--exit-code", "1", "--no-banner"]);
+// `dir` reads no config from the working directory, so name the repository's. Without it a built bundle is scanned
+// with the default rules alone, and the base64 of the inlined web-sdk-wasm trips facebook-page-access-token.
+const config = fileURLToPath(new URL("../.gitleaks.toml", import.meta.url));
+const status = await runGitleaks(["dir", root, "--redact", "--exit-code", "1", "--no-banner", "--config", config]);
 if (status !== 0) {
   console.error(`audit-dist: gitleaks dir ${root} exited ${status}`);
   process.exit(1);
