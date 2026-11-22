@@ -37,7 +37,7 @@ export async function runGitleaks(args) {
   try {
     const name = `gitleaks_${VERSION}_${platform}.tar.gz`;
     const url = `https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/${name}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
     if (!response.ok) throw new Error(`download ${url}: HTTP ${response.status}`);
     const archive = Buffer.from(await response.arrayBuffer());
     const actual = createHash("sha256").update(archive).digest("hex");
@@ -45,9 +45,10 @@ export async function runGitleaks(args) {
     writeFileSync(join(dir, name), archive);
     const tar = spawnSync("tar", ["-xzf", join(dir, name), "-C", dir, "gitleaks"], { stdio: "inherit" });
     if (tar.status !== 0) throw new Error(`tar exited ${tar.status ?? tar.signal}`);
-    const run = spawnSync(join(dir, "gitleaks"), args, { stdio: "inherit" });
+    const run = spawnSync(join(dir, "gitleaks"), args, { stdio: "inherit", timeout: 600_000 });
     if (run.error) throw run.error;
-    return run.status ?? 2;
+    if (run.status === null) throw new Error(`gitleaks stopped by ${run.signal}`);
+    return run.status;
   } catch (error) {
     console.error(`gitleaks: ${error instanceof Error ? error.message : error}`);
     return 2;

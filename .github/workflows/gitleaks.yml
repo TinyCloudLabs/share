@@ -1,11 +1,15 @@
 name: Secret scan
 
 # Pre-release security check: pinned gitleaks (scripts/gitleaks.mjs verifies its sha256).
-# - pull_request: only the PR's own commits (base..head); any finding fails.
-# - push to main: the full history against the reviewed baseline in .gitleaksignore
+# - pull_request: only the PR's own commits (base..head), judged by the BASE commit's
+#   .gitleaks.toml and .gitleaksignore, so a PR cannot allowlist its own leak: a new
+#   finding fails even when the same PR lists it. Baseline changes go in their own PR
+#   (a PR that only edits the baseline adds no finding, so it passes; review decides).
+# - push to main: the full history against main's reviewed baseline in .gitleaksignore
 #   (fingerprints of known test fixtures) and the did:key exception in .gitleaks.toml.
-# Findings are printed redacted. The built site is scanned separately by
-# scripts/audit-dist.mjs, which `npm run build:deploy` runs (sdk-tests, Cloudflare Pages).
+# `gitleaks:allow` comments are ignored in both modes. Findings are printed redacted.
+# The built site is scanned separately by scripts/audit-dist.mjs, which
+# `npm run build:deploy` runs (sdk-tests, Cloudflare Pages).
 on:
   pull_request:
   push:
@@ -25,12 +29,32 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
-      - name: Scan the pull request's commits
+      - name: Scan the pull request's commits with the base commit's rules
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/gitleaks.mjs git --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --exit-code 1 --no-banner
+        run: |
+          set -euo pipefail
+          rules="${RUNNER_TEMP}/gitleaks-base"
+          mkdir -p "$rules"
+          # gitleaks also loads <source>/.gitleaksignore and <source>/.gitleaks.toml; the scan
+          # reads git history, so removing the PR's working-tree copies changes nothing else.
+          rm -f .gitleaksignore .gitleaks.toml
+          args=(--gitleaks-ignore-path "$rules/.gitleaksignore")
+          if git cat-file -e "${BASE_SHA}:.gitleaksignore" 2>/dev/null; then
+            git show "${BASE_SHA}:.gitleaksignore" > "$rules/.gitleaksignore"
+          else
+            : > "$rules/.gitleaksignore"
+          fi
+          if git cat-file -e "${BASE_SHA}:.gitleaks.toml" 2>/dev/null; then
+            git show "${BASE_SHA}:.gitleaks.toml" > "$rules/.gitleaks.toml"
+            args+=(--config "$rules/.gitleaks.toml")
+          else
+            echo "Base commit has no .gitleaks.toml: using gitleaks' default rules"
+          fi
+          node scripts/gitleaks.mjs git --log-opts="${BASE_SHA}..${HEAD_SHA}" "${args[@]}" \
+            --ignore-gitleaks-allow --redact --exit-code 1 --no-banner
       - name: Scan the full history against the baseline
         if: github.event_name == 'push'
-        run: node scripts/gitleaks.mjs git --redact --exit-code 1 --no-banner
+        run: node scripts/gitleaks.mjs git --ignore-gitleaks-allow --redact --exit-code 1 --no-banner
