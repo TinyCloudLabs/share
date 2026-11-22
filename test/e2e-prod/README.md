@@ -173,7 +173,10 @@ registry are all production. The inbox's mail is deleted from QA mail as it is
 read and again at the end, also when the run is stopped (`inboxDeleted` in the
 report). The run needs `QA_MAIL_ADDRESS_SECRET` and `QA_MAIL_READ_TOKEN` in
 its environment (repository secrets in CI); without them it stops at the
-`inbox` stage.
+`inbox` stage. If OpenKey asks the new account to agree to its Terms, the smoke
+clicks "Agree and continue" (up to three times if OpenKey does not take a
+click; `terms.clicks` in the report); when OpenKey shows no such step it clicks
+nothing.
 
 ```bash
 npm run test:e2e:sender-signin                                  # live share.tinycloud.xyz
