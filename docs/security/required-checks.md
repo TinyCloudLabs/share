@@ -129,6 +129,12 @@ The build reads only public values:
 
 It needs no secret, so a preview build is already build-only as long as the Pages variables hold nothing secret.
 
+Turning previews off doesn't affect any check (checked 2026-11-22 for Naomi):
+
+- **PR `smoke`** (`sender-signin-smoke.yml`) never opens a preview URL. On `pull_request` it runs `npm run build:deploy`, sets `SHARE_SMOKE_CANDIDATE=dist`, serves `dist` on 127.0.0.1 over a throwaway certificate, and maps `share.tinycloud.xyz` to that server inside the runner's Chrome (`--host-resolver-rules`, `test/e2e-prod/sender-signin-smoke.mjs:186-192`).
+- **Push-to-main `smoke`** and **`sender-encrypted-share-smoke`** wait for the *production* `Cloudflare Pages: share` check. `.github/scripts/pages-check-state.mjs` explicitly ignores preview check runs (those whose summary has "Branch Preview URL"). They then test `https://share.tinycloud.xyz`.
+- No workflow or test reads a `*.share*.pages.dev` URL. `pages.dev` appears only in tests asserting a production build names none.
+
 After (Amos):
 
 1. Cloudflare, both projects, Settings, Builds: set "Preview branches" to *None*, or to *Custom* with include `main` only once production moves to a `production` branch. Check that the Preview and Production build variables hold only the public values above.
