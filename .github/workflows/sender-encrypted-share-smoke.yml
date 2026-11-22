@@ -63,7 +63,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 60); do
             state=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs?filter=all&per_page=100" \
               | node .github/scripts/pages-check-state.mjs "$GITHUB_SHA")
             echo "Cloudflare Pages: ${state}"
@@ -74,7 +74,7 @@ jobs:
             esac
             sleep 20
           done
-          echo "Cloudflare Pages did not finish within 10 minutes"; exit 1
+          echo "Cloudflare Pages did not finish within 20 minutes"; exit 1
       - name: Sender encrypted share smoke
         env:
           SHARE_SMOKE_CANDIDATE: ${{ inputs.candidate && 'dist' || '' }}
