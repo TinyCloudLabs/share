@@ -356,6 +356,9 @@ function classify({ stage: failedStage, error, failedRequests = [], pendingReque
   const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "inbox") return "mail-delivery: the test inbox could not be made";
+  // OpenKey limits how often it sends a code. A refused send mails nothing, so the missing
+  // code is OpenKey's refusal, not a mail failure.
+  if (failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status === 429 && (entry.path ?? "").endsWith("/email-otp/send-verification-otp"))) return "openkey: rate-limited sending the code";
   if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached the test inbox";
   if (openKeyAlert !== undefined) return "openkey: OpenKey refused a step";
   // A fresh inbox always draws NEW_ACCOUNT_CONFIRMATION_REQUIRED: OpenKey's
