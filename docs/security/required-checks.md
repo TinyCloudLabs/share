@@ -20,12 +20,22 @@ All four are GitHub Actions check runs (`integration_id` 15368).
 - Stage 1 (`sdk-tests`, `smoke`; Clarissa's request, Naomi OK 09:50Z): both have passed on main commit 66c082df. `sdk-tests` passed. `smoke` passed on run attempt 2 at 09:54Z; attempt 1 and the 06:31Z schedule failed. Before applying, tell the Share smoke lead (agent 11c34b62).
   `smoke` depends on production OpenKey, Node and the QA mail inbox, so an outage there blocks every merge. The emergency override is the admin bypass below. The alternative is to drop `smoke` from the list.
   Fork PRs don't get the smoke's secrets, so they can't pass it. Outside contributions come in through an admin bypass merge or a same-repository branch.
-- Stage 2 (adds `worker-tests`, `gitleaks`): after this PR merges and both pass on the merge commit on main. That merge is their first always-run pass on main.
-- **Hold (Naomi, 10:15Z): apply stage 1 only after the Share smoke lead's Terms-click PR is merged on main.** That PR renames the encrypted job from `smoke` to `encrypted-smoke` and makes the sign-in smoke click through OpenKey's Terms. Without it:
-  - the required `smoke` can be shadowed by the encrypted job of the same name;
-  - `smoke` goes red on every PR once OpenKey turns Terms back on.
+- Stage 1 is **live**: ruleset id `27837454`, created 2026-11-22 10:37:26Z by Amos.
+- Stage 2 (adds `worker-tests`, `gitleaks`): apply only after **each** has passed once on share `main`. Today neither has:
+  - `gitleaks.yml` doesn't exist on main yet;
+  - `links-api.yml` on main still has a `paths:` filter, so `worker-tests` runs there only on Worker changes.
 
-  After that merge, check that `smoke` and `sdk-tests` both pass on the merge commit, then apply.
+  The first passes are expected on the merge commit of this PR. Check them with:
+
+  ```
+  M=$(gh api repos/TinyCloudLabs/share/commits/main --jq .sha)
+  gh api "repos/TinyCloudLabs/share/commits/$M/check-runs?per_page=100" \
+    --jq '.check_runs[] | select(.name=="gitleaks" or .name=="worker-tests") | [.name,.conclusion,.app.id] | @tsv'
+  # want: gitleaks success 15368 / worker-tests success 15368
+  ```
+
+  Amos applies it after Naomi's GO.
+- History: Naomi's 10:15Z hold kept stage 1 back until the Share smoke lead's Terms-click PR merged on main. That was #235, d302b195, at 10:22:53Z. It renames the encrypted workflow's job to `encrypted-smoke`, so it can't shadow the required `smoke`. Stage 1 was applied 14 minutes later.
 
 ## Before (2026-11-22, read-only)
 
@@ -86,20 +96,54 @@ Nothing protects `main`: anyone with write access can push directly, and Cloudfl
 - Review count is 0, so the change is "every commit reaches main through a PR with green checks", not a new review gate.
 - Record the returned `id` as `RULESET_ID`.
 
-## After, stage 2 (add `worker-tests`, `gitleaks`)
+## After, stage 2 (add `worker-tests`, `gitleaks` to ruleset 27837454)
 
-`gh api -X PUT repos/TinyCloudLabs/share/rulesets/$RULESET_ID --input stage2.json`, where `stage2.json` is `stage1.json` with two more entries in `required_status_checks`:
+Before (live stage 1, read 10:38Z):
+
+```
+$ gh api repos/TinyCloudLabs/share/rulesets/27837454 \
+    --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
+[{"context":"sdk-tests","integration_id":15368},{"context":"smoke","integration_id":15368}]
+```
+
+Change: `gh api -X PUT repos/TinyCloudLabs/share/rulesets/27837454 --input stage2.json`.
+
+`stage2.json` is `stage1.json` above (the body that created the live ruleset) with two entries appended to `required_status_checks`. A PUT replaces the whole `rules` array, so the body carries every rule, not only the new checks. Its `required_status_checks` rule:
 
 ```json
-{ "context": "worker-tests", "integration_id": 15368 },
-{ "context": "gitleaks", "integration_id": 15368 }
+{
+  "type": "required_status_checks",
+  "parameters": {
+    "strict_required_status_checks_policy": false,
+    "do_not_enforce_on_create": false,
+    "required_status_checks": [
+      { "context": "sdk-tests", "integration_id": 15368 },
+      { "context": "smoke", "integration_id": 15368 },
+      { "context": "worker-tests", "integration_id": 15368 },
+      { "context": "gitleaks", "integration_id": 15368 }
+    ]
+  }
+}
 ```
+
+Build it from the stage 1 body so the other rules stay byte-for-byte what was applied:
+
+```
+jq '.rules |= map(if .type=="required_status_checks"
+      then .parameters.required_status_checks += [
+        {"context":"worker-tests","integration_id":15368},
+        {"context":"gitleaks","integration_id":15368}]
+      else . end)' stage1.json > stage2.json
+```
+
+After: the same GET returns four contexts. Compare the before and after GETs with `.rules`. Only `required_status_checks` should differ; `pull_request`, `deletion`, `non_fast_forward`, `bypass_actors` and `conditions` stay the same.
 
 ## Undo
 
-- Stage 2: `gh api -X PUT repos/TinyCloudLabs/share/rulesets/$RULESET_ID --input stage1.json`.
-- `smoke` only (outage): PUT `stage1.json` (or `stage2.json`) without the `smoke` entry.
-- Stage 1: `gh api -X DELETE repos/TinyCloudLabs/share/rulesets/$RULESET_ID` (back to "Before"), or set `"enforcement": "disabled"` with a PUT to keep the definition.
+- Stage 2: `gh api -X PUT repos/TinyCloudLabs/share/rulesets/27837454 --input stage1.json`. That restores the two-check list read above.
+- `gitleaks` or `worker-tests` alone (a broken check): PUT `stage2.json` without that entry.
+- `smoke` only (outage): PUT the current body without the `smoke` entry. The emergency alternative is the admin bypass merge.
+- Stage 1: `gh api -X DELETE repos/TinyCloudLabs/share/rulesets/27837454` (back to "Before"), or PUT `{"enforcement": "disabled"}` to keep the definition.
 
 ## Verify
 
