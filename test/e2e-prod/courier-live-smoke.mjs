@@ -240,6 +240,9 @@ async function drive(page, done, counter, timeout = 240_000) {
       await code.type(otp);
       await until(() => clickButton(connect, "Verify"), 10_000, "Verify");
       await until(async () => connect.isDetached() || frameAt(page, "/widget/embed/sign") !== undefined || await clickButton(connect, "Create a new account"), 30_000, "the next OpenKey step").catch(() => undefined);
+      // OpenKey asks a new account to agree to its Terms in the same frame (TC-3766): one click per sign-in, once
+      // Agree is enabled. An account that has agreed, or OpenKey with the Terms off, shows no such button.
+      await until(async () => connect.isDetached() || frameAt(page, "/widget/embed/sign") !== undefined || await clickButton(connect, "Agree and continue").then((clicked) => { if (clicked) report.terms = { clicks: (report.terms?.clicks ?? 0) + 1 }; return clicked; }), 30_000, "the next OpenKey step").catch(() => undefined);
       emailDone = true;
       setStage(counter);
     }

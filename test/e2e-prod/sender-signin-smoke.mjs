@@ -237,6 +237,7 @@ try {
   // created the account silently; then the screen never appears and the wait
   // ends on the first tick.
   report.newAccount = { screen: false, clicks: 0 };
+  report.terms = { clicks: 0 };
   {
     const confirmDeadline = Date.now() + 90_000;
     let confirmed = false;
@@ -248,6 +249,10 @@ try {
       if (ready && report.newAccount.clicks < 3 && await clickButton(connect, "Create a new account").catch(() => false)) {
         report.newAccount.clicks += 1;
       }
+      // OpenKey asks a new account to agree to its Terms in the same frame (TC-3766). Agree stays
+      // disabled until the frame has settled, and clickButton skips a disabled button; one click
+      // at most. With the Terms off the button never appears.
+      if (report.terms.clicks < 1 && await clickButton(connect, "Agree and continue").catch(() => false)) report.terms.clicks += 1;
       await sleep(250);
     }
     if (!confirmed && !connect.isDetached() && frameAt(sender, "/widget/embed/sign") === undefined) {
