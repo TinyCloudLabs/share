@@ -341,11 +341,6 @@ try {
   report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
   const sender = (await browser?.pages().catch(() => []))?.find((page) => page.url().startsWith(SHARE));
   report.pageStatus = scrub(await sender?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
-  // Names only, never values: which saved-session entries are left, now and a few seconds later (a late write shows as a change).
-  const keyNames = () => Object.keys(localStorage).filter((key) => key.startsWith("tinycloud-share-library-")).map((key) => key.slice("tinycloud-share-library-".length).replace(/^0x[0-9a-fA-F]{40}$/, "<address>"));
-  report.libraryKeysAtFailure = await sender?.evaluate(keyNames).catch(() => undefined);
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  report.libraryKeysAfter3s = await sender?.evaluate(keyNames).catch(() => undefined);
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     const pages = await browser.pages().catch(() => []);
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
