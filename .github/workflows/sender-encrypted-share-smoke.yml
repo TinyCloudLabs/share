@@ -41,7 +41,9 @@ permissions:
   checks: read
 
 jobs:
-  smoke:
+  # Not `smoke`: that is the sign-in smoke's job, a required check on main. A dispatch of this
+  # workflow on a pull request's head would otherwise post a second check under that name.
+  encrypted-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
