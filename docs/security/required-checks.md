@@ -211,4 +211,6 @@ Undo:
 | `.release-evidence/*.json`, `test/e2e-prod/native-stack.mjs`, `test/e2e-email/integration.mjs` | generic-api-key | commit and deployment digests of OpenCredentials and Node (public pins) |
 | `.github/workflows/share-api-docker-smoke.yml` (deleted) | generic-api-key | container image reference and the production policy enforcer `did:key` (public) |
 
+`scripts/audit-dist.mjs` scans the built files with `.gitleaks.toml` (default rules plus its allowlists). One allowlist covers `facebook-page-access-token` on `dist/assets/tinycloud-web-sdk-*.js` only, the chunk `vite.config.ts` builds from `@tinycloud/web-sdk`'s prebuilt entry module, because the base64 of the WebAssembly inlined in it matches that rule by chance. Residual: a real Facebook page token inside that SDK chunk would not be reported; Share has no Facebook integration. Source files, git history and every other built file are unaffected.
+
 A new finding fails `gitleaks`. If it is a real secret, revoke it and tell security; don't list it. If it is safe, add its fingerprint with the reason in the PR.

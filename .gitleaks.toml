@@ -12,3 +12,11 @@ description = "did:key identifiers are public keys"
 targetRules = ["generic-api-key"]
 regexTarget = "match"
 regexes = ['''^key:(z6Mk|zQ3s|zDn)[1-9A-HJ-NP-Za-km-z]{40,}["'`]?$''']
+
+# The base64 of the WebAssembly inlined in web-sdk's prebuilt entry matches EAA[MC] by chance. vite.config.ts builds
+# that one module into its own chunk (dist/assets/tinycloud-web-sdk-<hash>.js), so this exception covers that file and
+# one rule. Share has no Facebook integration. Sources, git history, every other rule and every other built file keep the full scan.
+[[allowlists]]
+description = "base64 WebAssembly in the built web-sdk chunk"
+targetRules = ["facebook-page-access-token"]
+paths = ['''^dist/assets/tinycloud-web-sdk-[^/]+\.js$''']
