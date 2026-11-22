@@ -315,9 +315,10 @@ try {
         report.newAccount.clicks += 1;
       }
       // OpenKey asks a new account to agree to its Terms in the same frame (TC-3766). Agree stays disabled until
-      // the frame has settled, and clickButton skips a disabled button; one click at most. With the Terms off
-      // the button never appears.
-      if (report.terms.clicks < 1 && await clickButton(connect, "Agree and continue").catch(() => false)) report.terms.clicks += 1;
+      // the frame has settled, and clickButton skips a disabled button. Up to 3 clicks: a resize of the frame
+      // disables Agree again under the click, and a failed save re-enables it. With the Terms off the button
+      // never appears.
+      if (report.terms.clicks < 3 && await clickButton(connect, "Agree and continue").catch(() => false)) report.terms.clicks += 1;
       await sleep(250);
     }
     if (!confirmed && !connect.isDetached() && frameAt(sender, "/widget/embed/sign") === undefined) {
