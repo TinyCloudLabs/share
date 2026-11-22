@@ -1,7 +1,7 @@
 # Required checks on `main` (ruleset spec)
 
 Spec for Amos, who applies it. Agents don't change repository settings.
-Owners: Bobbie (security: `sdk-tests`, `worker-tests`, `gitleaks`), Clarissa (QA: `smoke`).
+Owners: Clarissa (QA: `sdk-tests`, `smoke`), Bobbie (security: `worker-tests`, `gitleaks`, and the audit inside `sdk-tests`).
 
 ## Checks
 
@@ -17,10 +17,10 @@ All four are GitHub Actions check runs (`integration_id` 15368).
 
 ### Preconditions (Naomi's rule: required only after a pass on main)
 
-- Stage 1 (`sdk-tests`, `worker-tests`, `gitleaks`): after this PR merges and all three pass on the merge commit on main. `sdk-tests` already passes on main (66c082df). `worker-tests` and `gitleaks` get their first always-run main pass from this PR's merge.
-- Stage 2 (`smoke`): after `smoke` passes on a main commit (it did on 66c082df, run attempt 2, 2026-11-22 09:54Z; attempt 1 and the 06:31Z schedule failed) **and** the Share smoke lead (agent 11c34b62) has been told, before the update is applied.
-  `smoke` depends on production OpenKey, Node and the QA mail inbox: an outage there blocks every merge. The admin bypass below is the emergency override; the alternative is to remove `smoke` from the list (stage 2 undo).
-  Fork PRs don't get the smoke's secrets, so they can't pass it; an admin bypass merge or a same-repository branch is the way in for outside contributions.
+- Stage 1 (`sdk-tests`, `smoke`; Clarissa's request, Naomi OK 09:50Z): both have passed on main commit 66c082df. `sdk-tests` passed. `smoke` passed on run attempt 2 at 09:54Z; attempt 1 and the 06:31Z schedule failed. Before applying, tell the Share smoke lead (agent 11c34b62).
+  `smoke` depends on production OpenKey, Node and the QA mail inbox, so an outage there blocks every merge. The emergency override is the admin bypass below. The alternative is to drop `smoke` from the list.
+  Fork PRs don't get the smoke's secrets, so they can't pass it. Outside contributions come in through an admin bypass merge or a same-repository branch.
+- Stage 2 (adds `worker-tests`, `gitleaks`): after this PR merges and both pass on the merge commit on main. That merge is their first always-run pass on main.
 
 ## Before (2026-11-22, read-only)
 
@@ -69,8 +69,7 @@ Nothing protects `main`: anyone with write access can push directly, and Cloudfl
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "sdk-tests", "integration_id": 15368 },
-          { "context": "worker-tests", "integration_id": 15368 },
-          { "context": "gitleaks", "integration_id": 15368 }
+          { "context": "smoke", "integration_id": 15368 }
         ]
       }
     }
@@ -82,17 +81,19 @@ Nothing protects `main`: anyone with write access can push directly, and Cloudfl
 - Review count is 0, so the change is "every commit reaches main through a PR with green checks", not a new review gate.
 - Record the returned `id` as `RULESET_ID`.
 
-## After, stage 2 (add `smoke`)
+## After, stage 2 (add `worker-tests`, `gitleaks`)
 
-`gh api -X PUT repos/TinyCloudLabs/share/rulesets/$RULESET_ID --input stage2.json`, where `stage2.json` is `stage1.json` with one more entry in `required_status_checks`:
+`gh api -X PUT repos/TinyCloudLabs/share/rulesets/$RULESET_ID --input stage2.json`, where `stage2.json` is `stage1.json` with two more entries in `required_status_checks`:
 
 ```json
-{ "context": "smoke", "integration_id": 15368 }
+{ "context": "worker-tests", "integration_id": 15368 },
+{ "context": "gitleaks", "integration_id": 15368 }
 ```
 
 ## Undo
 
 - Stage 2: `gh api -X PUT repos/TinyCloudLabs/share/rulesets/$RULESET_ID --input stage1.json`.
+- `smoke` only (outage): PUT `stage1.json` (or `stage2.json`) without the `smoke` entry.
 - Stage 1: `gh api -X DELETE repos/TinyCloudLabs/share/rulesets/$RULESET_ID` (back to "Before"), or set `"enforcement": "disabled"` with a PUT to keep the definition.
 
 ## Verify
