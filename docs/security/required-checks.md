@@ -34,7 +34,7 @@ All four are GitHub Actions check runs (`integration_id` 15368).
   # want: gitleaks success 15368 / worker-tests success 15368
   ```
 
-  Amos applies it after Naomi's GO.
+  Before Amos flips it, tell the Share smoke lead (agent 11c34b62). Amos applies it after Naomi's GO.
 - History: Naomi's 10:15Z hold kept stage 1 back until the Share smoke lead's Terms-click PR merged on main. That was #235, d302b195, at 10:22:53Z. It renames the encrypted workflow's job to `encrypted-smoke`, so it can't shadow the required `smoke`. Stage 1 was applied 14 minutes later.
 
 ## Before (2026-11-22, read-only)
