@@ -1,15 +1,13 @@
 name: Links API Worker gates
 
+# Runs on every pull request so `worker-tests` can be a required check. The
+# "Decide whether the change touches the Worker" step skips the real work, and
+# the job still reports success, when a pull request changes no Worker path.
+# Pushes always run it.
 on:
   push:
     branches: [main, feat/tc-2212-api-sol61]
-    paths:
-      - worker/links-api/**
-      - .github/workflows/links-api.yml
   pull_request:
-    paths:
-      - worker/links-api/**
-      - .github/workflows/links-api.yml
 
 permissions:
   contents: read
@@ -23,10 +21,44 @@ jobs:
         working-directory: worker/links-api
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decide whether the change touches the Worker
+        id: relevance
+        working-directory: .
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fails open: only a clean diff with no matching path skips the work.
+          relevant=true
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "relevant=true: $EVENT_NAME always runs the Worker tests"
+          elif ! changed="$(git diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA")"; then
+            echo "relevant=true: git diff failed, running the Worker tests"
+          else
+            relevant=false
+            while IFS= read -r file; do
+              case "$file" in
+                worker/links-api/* | .github/workflows/links-api.yml)
+                  relevant=true
+                  echo "relevant=true: $file matches a Worker path"
+                  break
+                  ;;
+              esac
+            done <<< "$changed"
+            if [ "$relevant" = false ]; then
+              echo "relevant=false: no changed file matches a Worker path"
+            fi
+          fi
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v4
+        if: steps.relevance.outputs.relevant == 'true'
         with:
           node-version: "22.23.2"
       - name: Isolate local test state
+        if: steps.relevance.outputs.relevant == 'true'
         run: |
           umask 077
           root=$(mktemp -d -p /var/tmp TC2212-ci-XXXXXXXX)
@@ -34,9 +66,12 @@ jobs:
             "XDG_CONFIG_HOME=$root/config" "npm_config_cache=$root/npm-cache" \
             "BUN_INSTALL_CACHE_DIR=$root/bun-cache" "COURIER_HOME=$root/courier" \
             "TINYCLOUD_HOME=$root/tinycloud" "WRANGLER_SEND_METRICS=false" >> "$GITHUB_ENV"
-      - run: npm ci --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm test
+      - if: steps.relevance.outputs.relevant == 'true'
+        run: npm ci --no-audit --no-fund
+      - if: steps.relevance.outputs.relevant == 'true'
+        run: npm run typecheck
+      - if: steps.relevance.outputs.relevant == 'true'
+        run: npm test
       - name: Remove recorded private test state
         if: always()
         run: |

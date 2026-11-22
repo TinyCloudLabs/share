@@ -1,0 +1,36 @@
+name: Secret scan
+
+# Pre-release security check: pinned gitleaks (scripts/gitleaks.mjs verifies its sha256).
+# - pull_request: only the PR's own commits (base..head); any finding fails.
+# - push to main: the full history against the reviewed baseline in .gitleaksignore
+#   (fingerprints of known test fixtures) and the did:key exception in .gitleaks.toml.
+# Findings are printed redacted. The built site is scanned separately by
+# scripts/audit-dist.mjs, which `npm run build:deploy` runs (sdk-tests, Cloudflare Pages).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: Scan the pull request's commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/gitleaks.mjs git --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --exit-code 1 --no-banner
+      - name: Scan the full history against the baseline
+        if: github.event_name == 'push'
+        run: node scripts/gitleaks.mjs git --redact --exit-code 1 --no-banner

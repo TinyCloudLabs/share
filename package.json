@@ -9,7 +9,7 @@
     "dev": "vite",
     "dev:one": "vite --mode one --port 5195 --strictPort",
     "build": "vite build",
-    "build:deploy": "vite build",
+    "build:deploy": "vite build && node scripts/audit-dist.mjs dist",
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts",
     "test:e2e:artifact": "node test/e2e-html-artifact.mjs",
@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit",
     "notice:jsx": "tsx scripts/generate-jsx-notice.mts",
     "test:e2e:jsx": "node test/e2e-jsx.mjs",
-    "build:usercontent": "tsx scripts/build-usercontent.mts",
+    "build:usercontent": "tsx scripts/build-usercontent.mts && node scripts/audit-dist.mjs dist-usercontent",
     "test:e2e:jsx-usercontent": "tsx test/e2e-jsx-usercontent.mjs"
   },
   "dependencies": {
