@@ -2,7 +2,7 @@
  * Real sender sign-in smoke (TC-994).
  *
  * Signs a brand-new throwaway OpenKey account (email OTP through a private
- * mail.tm inbox made for the run and deleted at its end, also when the run is
+ * QA mail inbox made for the run, its mail deleted at the end, also when the run is
  * stopped) into Share, creates a link-only share and opens it as a
  * recipient, then reloads Share (the saved session resumes with no approval)
  * and signs out (the saved session is gone). Everything is production:
@@ -31,7 +31,7 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
-import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./qa-mail.mjs";
 import { scrub } from "./smoke-redact.mjs";
 import { walletSummaryRecorder } from "./wallet-summary.mjs";
 
@@ -57,7 +57,7 @@ const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// Deletes the run's inbox once; a stopped run (Ctrl-C, kill) does not reach `finally`.
+// Deletes the mail in the run's inbox once; a stopped run (Ctrl-C, kill) does not reach `finally`.
 const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
 deleteInboxesOnStop();
 
@@ -237,6 +237,7 @@ try {
   // created the account silently; then the screen never appears and the wait
   // ends on the first tick.
   report.newAccount = { screen: false, clicks: 0 };
+  report.terms = { clicks: 0 };
   {
     const confirmDeadline = Date.now() + 90_000;
     let confirmed = false;
@@ -248,6 +249,11 @@ try {
       if (ready && report.newAccount.clicks < 3 && await clickButton(connect, "Create a new account").catch(() => false)) {
         report.newAccount.clicks += 1;
       }
+      // OpenKey asks a new account to agree to its Terms in the same frame (TC-3766). Agree stays
+      // disabled until the frame has settled, and clickButton skips a disabled button. Up to 3
+      // clicks: a resize of the frame disables Agree again under the click, and a failed save
+      // re-enables it. With the Terms off the button never appears.
+      if (report.terms.clicks < 3 && await clickButton(connect, "Agree and continue").catch(() => false)) report.terms.clicks += 1;
       await sleep(250);
     }
     if (!confirmed && !connect.isDetached() && frameAt(sender, "/widget/embed/sign") === undefined) {
@@ -355,6 +361,9 @@ function classify({ stage: failedStage, error, failedRequests = [], pendingReque
   const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "inbox") return "mail-delivery: the test inbox could not be made";
+  // OpenKey limits how often it sends a code. A refused send mails nothing, so the missing
+  // code is OpenKey's refusal, not a mail failure.
+  if (failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status === 429 && (entry.path ?? "").endsWith("/email-otp/send-verification-otp"))) return "openkey: rate-limited sending the code";
   if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached the test inbox";
   if (openKeyAlert !== undefined) return "openkey: OpenKey refused a step";
   // A fresh inbox always draws NEW_ACCOUNT_CONFIRMATION_REQUIRED: OpenKey's

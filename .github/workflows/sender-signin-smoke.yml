@@ -1,7 +1,7 @@
 name: Sender sign-in smoke (real OpenKey)
 
 # TC-994. A brand-new throwaway OpenKey account (email OTP through a private
-# mail.tm inbox, made per run and deleted at its end) signs in to Share, creates a link-only
+# QA mail inbox, made per run, its mail deleted at the end) signs in to Share, creates a link-only
 # share and opens it as a recipient, against production OpenKey and Node.
 # The joined gate fakes OpenKey; this check does not.
 #
@@ -63,6 +63,8 @@ jobs:
         env:
           SHARE_SMOKE_CANDIDATE: ${{ github.event_name == 'pull_request' && 'dist' || '' }}
           SHARE_SMOKE_ARTIFACT: ${{ runner.temp }}/sender-signin-smoke.json
+          QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
+          QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
         run: npm run test:e2e:sender-signin
       - name: Keep the scrubbed report
         if: always()

@@ -1,0 +1,14 @@
+# gitleaks configuration: the default rules plus one narrow exception.
+# A did:key identifier is a public key by definition, so `did:key:z6Mk...` (Ed25519),
+# `zQ3s...` (secp256k1) and `zDn...` (P-256) are never secrets. The generic-api-key rule
+# matches them through the word "key"; its match then starts at `key:`. Every other
+# finding is either fixed or listed by fingerprint in .gitleaksignore (the reviewed
+# baseline; see docs/security/required-checks.md).
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "did:key identifiers are public keys"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = ['''^key:(z6Mk|zQ3s|zDn)[1-9A-HJ-NP-Za-km-z]{40,}["'`]?$''']

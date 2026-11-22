@@ -4,9 +4,9 @@
  * The sender smoke (sender-signin-smoke.mjs) makes a link-only share. This one makes the share for
  * one named person ("Only this person", exactEmail): the file is encrypted to the share's key and
  * the policy roots are signed by the owner. A brand-new throwaway OpenKey account (email OTP through
- * a private mail.tm inbox) signs in to Share, creates the share for a second private inbox, and the
+ * a private QA mail inbox) signs in to Share, creates the share for a second private inbox, and the
  * recipient opens the link in a clean browser context: asks for a code, reads the 8-digit code from
- * the second inbox, enters it and sees the shared text. Both inboxes are deleted at the end, also
+ * the second inbox, enters it and sees the shared text. Both inboxes' mail is deleted at the end, also
  * when the run is stopped. Everything is production: OpenKey, the owner Node, the registry, the
  * code mail. Nothing about OpenKey is faked.
  *
@@ -30,7 +30,7 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
-import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, seenMail, waitForMail } from "./mail-tm.mjs";
+import { QA_MAIL, createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, seenMail, waitForMail } from "./qa-mail.mjs";
 import { scrub } from "./smoke-redact.mjs";
 import { walletSummaryRecorder } from "./wallet-summary.mjs";
 
@@ -60,7 +60,7 @@ async function sleep(ms) {
 }
 
 // One run makes at most two throwaway inboxes: the sender's (its OpenKey account) and the recipient's.
-// A third is refused before mail.tm is called.
+// A third is refused.
 const MAX_INBOXES = 2;
 let inboxesMade = 0;
 async function makeInbox(label) {
@@ -79,13 +79,12 @@ let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 
 // A smoke file's name is stored in the owner's space as the share's object key (share/<id>/<name>), so the
-// fixed `tcqa-` prefix marks the objects a run makes. The inboxes carry the same prefix (mail-tm.mjs).
+// fixed `tcqa-` prefix marks the objects a run makes. The inboxes' addresses start with `tcqa` too (qa-mail.mjs).
 const SMOKE_FILE = "tcqa-share-encrypted-smoke.md";
 
-// Any HTTP 429, from Share, OpenKey, a TinyCloud service or mail.tm, stops the run at once with no retry:
+// Any HTTP 429, from Share, OpenKey, a TinyCloud service or QA mail, stops the run at once with no retry:
 // the browser closes (which ends any wait on a page), every later wait throws, mail polling is aborted and
-// mail.tm calls are refused so mail-tm.mjs cannot retry. The inboxes are still deleted, once, in `finally`.
-const MAIL_TM_ORIGIN = "https://api.mail.tm";
+// QA mail calls are refused. The inboxes' mail is still deleted, once, in `finally`.
 const stopMail = new AbortController();
 let cleaning = false;
 let browserClosing;
@@ -102,13 +101,11 @@ function rateLimitedBy(origin) {
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const origin = new URL(typeof input === "string" || input instanceof URL ? input : input.url).origin;
-  if (origin !== MAIL_TM_ORIGIN) return realFetch(input, init);
+  if (origin !== QA_MAIL) return realFetch(input, init);
   if (report.rateLimited && !cleaning) return new Response(null, { status: 400 });
   const response = await realFetch(input, init);
-  if (response.status !== 429) return response;
-  rateLimitedBy(origin);
-  // Not a 429 to mail-tm.mjs, which retries those.
-  return new Response(null, { status: 400 });
+  if (response.status === 429) rateLimitedBy(origin);
+  return response;
 };
 
 const isStatic = (url) => /\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
@@ -307,6 +304,7 @@ try {
   // OpenKey asks before creating an account for an email it doesn't know (TC-1114); the inbox is new
   // on every run, so this click is part of the smoke.
   report.newAccount = { screen: false, clicks: 0 };
+  report.terms = { clicks: 0 };
   {
     const confirmDeadline = Date.now() + 90_000;
     let confirmed = false;
@@ -316,6 +314,11 @@ try {
       if (ready && report.newAccount.clicks < 3 && await clickButton(connect, "Create a new account").catch(() => false)) {
         report.newAccount.clicks += 1;
       }
+      // OpenKey asks a new account to agree to its Terms in the same frame (TC-3766). Agree stays disabled until
+      // the frame has settled, and clickButton skips a disabled button. Up to 3 clicks: a resize of the frame
+      // disables Agree again under the click, and a failed save re-enables it. With the Terms off the button
+      // never appears.
+      if (report.terms.clicks < 3 && await clickButton(connect, "Agree and continue").catch(() => false)) report.terms.clicks += 1;
       await sleep(250);
     }
     if (!confirmed && !connect.isDetached() && frameAt(sender, "/widget/embed/sign") === undefined) {
