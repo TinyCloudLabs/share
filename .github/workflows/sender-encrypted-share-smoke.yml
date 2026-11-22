@@ -1,22 +1,29 @@
 name: Sender encrypted share smoke (real OpenKey)
 
-# TC-2933. A brand-new OpenKey account (email OTP through a private mail.tm inbox made per run)
+# TC-2933. A brand-new OpenKey account (email OTP through a private QA mail inbox made per run)
 # signs in to Share, makes a share for one named person (a second private inbox) and that
 # person opens it with the emailed code, against production OpenKey and
 # Node. The link-only share has its own check (sender-signin-smoke.yml); this one covers the
 # encrypted addressed share.
 #
-# Runs by hand (workflow_dispatch) only. Each run makes one OpenKey account and one encrypted
-# share link, which stay, and two throwaway mail.tm inboxes, deleted at the end of the run. A
-# manual run opens live Share; with `candidate` it builds the dispatched ref and serves that
-# build at https://share.tinycloud.xyz inside the runner's Chrome only.
-#
-# The push and daily triggers are paused: mail.tm refuses inbox creation from GitHub's shared
-# runner addresses (HTTP 429). TC-3686 moves the inboxes to a mail source we control and
-# re-enables both triggers in the same change. Restore them as they were: push to main on
-# src/**, package.json, package-lock.json, this smoke and this workflow (the Cloudflare Pages
-# wait step below runs on push only), and cron "47 6 * * *".
+# Runs on each push to main that changes Share's source, its dependencies, this smoke or this
+# workflow (once Cloudflare Pages has deployed the commit), once a day, and by hand
+# (workflow_dispatch). Each run makes one OpenKey account and one encrypted share link, which stay,
+# and two throwaway inboxes on TinyCloud's QA mail (qa-mail.tinycloud.xyz, TC-3686), whose mail is
+# deleted at the end of the run. A push or
+# scheduled run opens live Share; a manual run with `candidate` builds the dispatched ref and
+# serves that build at https://share.tinycloud.xyz inside the runner's Chrome only.
 on:
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - package.json
+      - package-lock.json
+      - test/e2e-prod/sender-encrypted-share-smoke.mjs
+      - .github/workflows/sender-encrypted-share-smoke.yml
+  schedule:
+    - cron: "47 6 * * *"
   workflow_dispatch:
     inputs:
       candidate:
@@ -70,6 +77,8 @@ jobs:
         env:
           SHARE_SMOKE_CANDIDATE: ${{ inputs.candidate && 'dist' || '' }}
           SHARE_SMOKE_ARTIFACT: ${{ runner.temp }}/sender-encrypted-share-smoke.json
+          QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
+          QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
         run: node test/e2e-prod/sender-encrypted-share-smoke.mjs
       - name: Keep the scrubbed report
         if: always()

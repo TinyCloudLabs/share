@@ -165,11 +165,15 @@ in process memory and are never serialized.
 
 `sender-signin-smoke.mjs` is the release check that does not fake OpenKey
 (TC-994). Each run makes a new throwaway OpenKey account with a private
-per-run mail.tm inbox (`mail-tm.mjs`, "qa" in its name, password in memory)
-and email OTP, signs it in to Share, approves each OpenKey review, creates a
-link-only share and opens it in a fresh browser context. OpenKey, the owner
-Node and the registry are all production. The inbox is deleted at the end,
-also when the run is stopped (`inboxDeleted` in the report).
+per-run inbox on TinyCloud's QA mail (`qa-mail.mjs`: a signed
+`tcqa+share-…@qa-mail.tinycloud.xyz` address made in memory) and email OTP,
+signs it in to Share, approves each OpenKey review, creates a link-only share
+and opens it in a fresh browser context. OpenKey, the owner Node and the
+registry are all production. The inbox's mail is deleted from QA mail as it is
+read and again at the end, also when the run is stopped (`inboxDeleted` in the
+report). The run needs `QA_MAIL_ADDRESS_SECRET` and `QA_MAIL_READ_TOKEN` in
+its environment (repository secrets in CI); without them it stops at the
+`inbox` stage.
 
 ```bash
 npm run test:e2e:sender-signin                                  # live share.tinycloud.xyz
