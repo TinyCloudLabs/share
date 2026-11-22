@@ -51,8 +51,8 @@ export function clearRenewalReceipt(prefix: string, storage?: Pick<Storage, "rem
   try { (storage ?? window.localStorage).removeItem(receiptKey(prefix)); } catch { /* Blocked storage holds nothing to remove. */ }
 }
 
-/** What Share asks OpenKey to offer: renewal for up to 90 days. With no `purpose`, OpenKey's box starts unticked and the owner turns it on. */
-export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 * 60 * 60 } as const;
+/** What Share asks OpenKey to offer: renewal for up to 90 days. `purpose: "standing"` (a sign-in is ongoing access) lets OpenKey's box start ticked; the owner can untick it. */
+export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 * 60 * 60, purpose: "standing" } as const;
 
 /** The lease receipt in an `authorizeTinyCloud` result, only when the owner left renewal on (`renewalChoice: "leased"`); otherwise undefined. Unverified. */
 export function leaseFromApproval(result: unknown): unknown {
