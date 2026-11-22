@@ -108,6 +108,38 @@ A direct `git push origin main` from a non-admin is then refused, and a PR shows
 
 The Pages projects `share` and `share-usercontent` build `main` through the Cloudflare Git integration, not a GitHub job, so a ruleset gates what reaches `main`, and the audit in `build:deploy` / `build:usercontent` fails the Cloudflare build on a finding. Neither makes Cloudflare wait for the GitHub checks. Moving Cloudflare production to a `production` branch pushed only after green (the tinychat pattern) is a later item.
 
+## Deploy credentials and previews (Naomi's ruling, 2026-11-22 10:05Z)
+
+Deploy tokens live only in main-limited `production` environments; PR and branch previews are build-only.
+
+Before, read from GitHub on 2026-11-22 (names only):
+
+- No Cloudflare Pages token is in GitHub. Both Pages projects build through the Cloudflare Git integration.
+- Environment `production`: branch policy is `main` only. It holds `CLOUDFLARE_TUNNEL_TOKEN`, `PHALA_CLOUD_API_KEY` and `PHALA_SHARE_API_CVM_ID`, plus four non-secret pins. No current workflow names `environment: production`; these belonged to the removed share-api deploy.
+- Repository secrets: `QA_MAIL_ADDRESS_SECRET` and `QA_MAIL_READ_TOKEN`. `smoke` reads them on `pull_request`, so any same-repository branch can read them. They are QA mailbox credentials, not deploy tokens.
+- Organization secrets visible to this repository: `NPM_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Every workflow on every branch can read `NPM_TOKEN`. Share publishes nothing to npm.
+- Cloudflare previews: `share` builds every pushed branch. Branch `ci/prerelease-security-check` got a `Cloudflare Pages: share` check run on push, before it had a PR. Each preview runs that branch's own build scripts and publishes a public `pages.dev` URL. `share-usercontent` posted no check run for the branch [INFERENCE: its branch previews are off or restricted]. I couldn't read the Pages build variables (no CF API).
+
+The build reads only public values:
+
+- `VITE_USER_CONTENT_ORIGIN`, `VITE_SHARE_ORIGIN`, `VITE_OPENKEY_ORIGIN`, `VITE_LINKS_API_ORIGIN`, `VITE_ONE_BUILD`, `VITE_SHARE_HERMETIC`, `VITE_SHARE_VIEWER_HERMETIC`;
+- `COURIER_DEV_NODE`;
+- `USER_CONTENT_VIEWER_ORIGIN`.
+
+It needs no secret, so a preview build is already build-only as long as the Pages variables hold nothing secret.
+
+After (Amos):
+
+1. Cloudflare, both projects, Settings, Builds: set "Preview branches" to *None*, or to *Custom* with include `main` only once production moves to a `production` branch. Check that the Preview and Production build variables hold only the public values above.
+2. GitHub: remove `share` from the repositories that can read the org secret `NPM_TOKEN`.
+3. Optional, needs an owner decision: delete the unused `production` environment secrets (`CLOUDFLARE_TUNNEL_TOKEN`, `PHALA_CLOUD_API_KEY`), or keep them main-only as they are.
+
+Undo:
+
+1. Set "Preview branches" back to *All non-Production branches*.
+2. Add `share` back to `NPM_TOKEN`'s repository list.
+3. Deleted secrets can't be restored; re-create them from the source of truth. That is why step 3 needs an owner decision.
+
 ## gitleaks baseline
 
 `.gitleaksignore` lists the 154 fingerprints of the full-history scan at 66c082df (gitleaks 8.30.1) that remain after `.gitleaks.toml` drops `did:key` identifiers (public keys). Reviewed 2026-11-22; none is a live credential:
