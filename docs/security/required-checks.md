@@ -9,7 +9,7 @@ Owners: Clarissa (QA: `sdk-tests`, `smoke`), Bobbie (security: `worker-tests`, `
 |---|---|---|---|
 | `sdk-tests` | `share-sdk.yml` | every PR, push to main | typecheck, vitest (CSP, privacy, user-content origin), `npm run build:deploy` (which runs `scripts/audit-dist.mjs`: no source maps, file-type allowlist, key/token patterns, `gitleaks dir dist`), production origin contract |
 | `worker-tests` | `links-api.yml` | every PR (skips inside when no `worker/links-api/**` path changed), push to main | links-api Worker typecheck and tests (`read-auth.test.ts`) |
-| `gitleaks` | `gitleaks.yml` | every PR (PR commits only), push to main (full history against `.gitleaksignore`) | no secret in the PR's commits |
+| `gitleaks` | `gitleaks.yml` | every PR: only the PR's commits, judged by the base commit's `.gitleaks.toml`/`.gitleaksignore`, `gitleaks:allow` ignored. Push to main: full history against main's `.gitleaksignore` | no secret in the PR's commits; a PR can't allowlist its own leak |
 | `smoke` | `sender-signin-smoke.yml` | every PR (candidate build), push to main, daily | a throwaway account signs in to Share against production OpenKey and Node, shares, and reads back |
 
 All four are GitHub Actions check runs (`integration_id` 15368).
