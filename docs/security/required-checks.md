@@ -13,7 +13,7 @@ Owners: Clarissa (QA: `sdk-tests`, `smoke`), Bobbie (security: `worker-tests`, `
 | `smoke` | `sender-signin-smoke.yml` | every PR (candidate build), push to main, daily | a throwaway account signs in to Share against production OpenKey and Node, shares, and reads back |
 
 All four are GitHub Actions check runs (`integration_id` 15368).
-`sender-encrypted-share-smoke.yml` also has a job named `smoke`, but it runs only on push to main, so a pull request only ever sees the sign-in smoke.
+`sender-encrypted-share-smoke.yml` also has a job named `smoke`. It runs only on push to main and on dispatch, but on main it can shadow the sign-in `smoke` under the same check name. The Share smoke lead's Terms-click PR renames it to `encrypted-smoke`.
 
 ### Preconditions (Naomi's rule: required only after a pass on main)
 
@@ -21,6 +21,11 @@ All four are GitHub Actions check runs (`integration_id` 15368).
   `smoke` depends on production OpenKey, Node and the QA mail inbox, so an outage there blocks every merge. The emergency override is the admin bypass below. The alternative is to drop `smoke` from the list.
   Fork PRs don't get the smoke's secrets, so they can't pass it. Outside contributions come in through an admin bypass merge or a same-repository branch.
 - Stage 2 (adds `worker-tests`, `gitleaks`): after this PR merges and both pass on the merge commit on main. That merge is their first always-run pass on main.
+- **Hold (Naomi, 10:15Z): apply stage 1 only after the Share smoke lead's Terms-click PR is merged on main.** That PR renames the encrypted job from `smoke` to `encrypted-smoke` and makes the sign-in smoke click through OpenKey's Terms. Without it:
+  - the required `smoke` can be shadowed by the encrypted job of the same name;
+  - `smoke` goes red on every PR once OpenKey turns Terms back on.
+
+  After that merge, check that `smoke` and `sdk-tests` both pass on the merge commit, then apply.
 
 ## Before (2026-11-22, read-only)
 
