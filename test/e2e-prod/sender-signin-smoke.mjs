@@ -2,7 +2,7 @@
  * Real sender sign-in smoke (TC-994).
  *
  * Signs a brand-new throwaway OpenKey account (email OTP through a private
- * mail.tm inbox made for the run and deleted at its end, also when the run is
+ * QA mail inbox made for the run, its mail deleted at the end, also when the run is
  * stopped) into Share, creates a link-only share and opens it as a
  * recipient, then reloads Share (the saved session resumes with no approval)
  * and signs out (the saved session is gone). Everything is production:
@@ -31,7 +31,7 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
-import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./qa-mail.mjs";
 import { scrub } from "./smoke-redact.mjs";
 import { walletSummaryRecorder } from "./wallet-summary.mjs";
 
@@ -57,7 +57,7 @@ const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// Deletes the run's inbox once; a stopped run (Ctrl-C, kill) does not reach `finally`.
+// Deletes the mail in the run's inbox once; a stopped run (Ctrl-C, kill) does not reach `finally`.
 const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
 deleteInboxesOnStop();
 
