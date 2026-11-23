@@ -1,11 +1,11 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { CONFIG_VERSION, type SharePublicConfig } from "../src/email-share/config.js";
+import type { SharePublicConfig } from "../src/email-share/config.js";
 import { authenticateWithOpenKey, createTinyCloudClient, saveCopyManifest, SAVE_COPY_MANIFEST_SCOPE, signInWithManifest } from "../src/share/openkey-session.js";
 import { shareManifest } from "../src/share/share-manifest.js";
 
 const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const CONFIG: SharePublicConfig = {
-  version: CONFIG_VERSION,
+  version: "tinycloud.share/config-v2",
   shareOrigin: "https://share.example",
   senderBootstrapNodeOrigin: "https://node.example",
   registryOrigin: "https://registry.example",

@@ -318,7 +318,7 @@ export interface SignInWithManifestOptions extends ManifestScope {
    */
   readonly versionedSignIn?: boolean;
   /**
-   * With `versionedSignIn` and `persistSession`: ask OpenKey to offer the owner automatic renewal for up to 90 days
+   * With `versionedSignIn` and `persistSession`: ask OpenKey to offer the owner automatic renewal for up to 90 days.
    * The box may start ticked only when the manifest grants no access to secrets or decryption. When the owner
    * enables renewal, the lease is checked, admitted by the session's node and
    * kept with the saved session, and a reload past the signed end restores through it. Without a lease the sign-in is a
