@@ -11,6 +11,7 @@ import type { CatalogEntry } from "./catalog.ts";
 import type { Manifest, PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
+import { renewalReceiptRunning } from "../share/renewal-store.js";
 import { CONNECT_WINDOW_MS, withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
@@ -86,7 +87,8 @@ export async function runnerSessionPrefix(appId: string): Promise<string> {
 async function clearSdkKeptRuntimeGrants(sessionPrefix: string, address?: string): Promise<void> {
   const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const storage = new BrowserSessionStorage({ keyPrefix: sessionPrefix });
-  const target = address ?? storage.activeAddress();
+  // Not `activeAddress()`: that drops the pointer of a session past its signed end, which a renewal lease still restores.
+  const target = address ?? storage.activeAddressForRenewal();
   if (target !== undefined) await storage.saveRuntimeGrants(target, []);
 }
 
@@ -268,7 +270,11 @@ export function createRunPorts(): RunPorts {
     async hasPersistedSession(appId): Promise<boolean> {
       const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
       const keyPrefix = await runnerSessionPrefix(appId);
-      return new BrowserSessionStorage({ keyPrefix }).activeAddress() !== undefined;
+      const storage = new BrowserSessionStorage({ keyPrefix });
+      // A saved session past its signed end with a running renewal lease still counts: `activeAddress()` would drop its pointer, so the lease is looked at first.
+      const saved = storage.activeAddressForRenewal();
+      if (saved !== undefined && renewalReceiptRunning(keyPrefix, saved)) return true;
+      return storage.activeAddress() !== undefined;
     },
     async prepare(entry): Promise<PreparedApp> {
       // Before the app's permissions are signed, every catalog file is fetched and checked against its pin, and the manifest is loaded and checked.
@@ -316,6 +322,8 @@ export function createRunPorts(): RunPorts {
             restoreBeforeOpenKey: true,
             sessionPrefix,
             persistSession: true,
+            versionedSignIn: true,
+            renewal: true,
             expiry: RUNTIME_SESSION_MS,
           });
         } catch (error) {

@@ -51,6 +51,24 @@ vi.mock("@openkey/sdk", () => {
         testState.signCalls += 1;
         return { address: OWNER.address, signature: await OWNER.signMessage({ message: input.message }) };
       }
+      // The versioned sign-in (`authorizeTinyCloud`): OpenKey signs the SIWE as asked and answers with every requested capability selected.
+      async authorizeTinyCloud(request: { siwe: string }) {
+        testState.signCalls += 1;
+        const core = await import("@tinycloud/sdk-core");
+        const selectedActionKeys: string[] = [];
+        const grants = new Map<string, { service: string; space: string; path: string; actions: string[] }>();
+        for (const [resource, actions] of Object.entries(core.extractRecapAttenuations(request.siwe))) {
+          const { space, path } = core.parseCanonicalRecapResource(resource);
+          for (const action of Object.keys(actions)) {
+            const service = action.slice(0, action.indexOf("/"));
+            selectedActionKeys.push([service, space, path, action].join("\0"));
+            const grant = grants.get(`${service}\0${space}\0${path}`) ?? { service, space, path, actions: [] };
+            grant.actions.push(action);
+            grants.set(`${service}\0${space}\0${path}`, grant);
+          }
+        }
+        return { protocolVersion: 1, address: OWNER.address, signature: await OWNER.signMessage({ message: request.siwe }), signedMessage: request.siwe, selectedActionKeys, permissions: [...grants.values()] };
+      }
     },
     OpenKeyProvider: class {
       async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
