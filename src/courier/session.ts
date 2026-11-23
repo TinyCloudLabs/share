@@ -102,9 +102,8 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
       address: session.address,
       store: createKvStore(kv),
       dispose: connected.dispose,
-      // Courier always connects OpenKey in this tab (it keeps nothing, so it never resumes without it), so OpenKey holds
-      // a sign-in here; said directly rather than marked in storage, which Courier keeps empty.
-      signOut: () => endSenderSession({ session: connected.session!, tinycloud: connected.tinycloud }, { connectedHere: true }),
+      // Courier always connects OpenKey in this tab (it keeps nothing, so it never resumes without it).
+      signOut: () => endSenderSession({ session: connected.session!, tinycloud: connected.tinycloud }),
     };
   } catch (error) {
     await signedIn?.dispose();

@@ -7,6 +7,7 @@
  * whether there is a session to resume.
  */
 import type { AuthResult } from "@openkey/sdk";
+import { clearRenewalReceipt, renewalReceiptRunning } from "./renewal-store.js";
 
 /** The SDK's storage-key prefix for the library session. Its own, so no other Share sign-in reads or replaces it. */
 export const LIBRARY_SESSION_PREFIX = "tinycloud-share-library-";
@@ -27,7 +28,8 @@ export function savedLibraryAccount(storage?: Pick<Storage, "getItem">): AuthRes
     if (address === null) return undefined;
     const record: unknown = JSON.parse(store.getItem(`${LIBRARY_SESSION_PREFIX}${address}`) ?? "null");
     const expiresAt = typeof record === "object" && record !== null && "expiresAt" in record && typeof record.expiresAt === "string" ? Date.parse(record.expiresAt) : Number.NaN;
-    if (!(Number.isFinite(expiresAt) && expiresAt > Date.now())) return undefined;
+    // Past its signed end a session still resumes while its renewal receipt's lease runs: the SDK restores it through the lease, or signs in afresh.
+    if (!(Number.isFinite(expiresAt) && (expiresAt > Date.now() || renewalReceiptRunning(LIBRARY_SESSION_PREFIX, address, store)))) return undefined;
     const account: unknown = JSON.parse(store.getItem(ACCOUNT_KEY) ?? "null");
     if (typeof account !== "object" || account === null || !("address" in account) || !("keyId" in account) || !("keyType" in account)) return undefined;
     const { address: accountAddress, keyId, keyType } = account;
@@ -44,27 +46,8 @@ export function saveLibraryAccount(auth: AuthResult): void {
   try { window.localStorage.setItem(ACCOUNT_KEY, JSON.stringify({ address: auth.address, keyId: auth.keyId, keyType: auth.keyType })); } catch { /* Not saved: the next load signs in. */ }
 }
 
-/** Forgets the account at sign-out, with the session the SDK clears. */
+/** Forgets the account at sign-out, with the session the SDK clears, and the renewal receipt kept beside it. */
 export function forgetLibraryAccount(): void {
   try { window.localStorage.removeItem(ACCOUNT_KEY); } catch { /* Blocked storage holds nothing to forget. */ }
-}
-
-/**
- * Whether OpenKey holds a sign-in in this tab. OpenKey's embedded window keeps its sign-in per tab, and since a
- * saved session resumes without opening OpenKey, a resumed tab often holds none. Share marks the tab when OpenKey
- * connects or signs in it (both need OpenKey's sign-in there) and asks OpenKey to sign out only when marked.
- * sessionStorage, like OpenKey's own: a reload keeps it, a new tab starts without it.
- */
-const OPENKEY_TAB_KEY = "tinycloud-share-openkey-signed-in";
-
-export function markOpenKeySignedInHere(): void {
-  try { window.sessionStorage.setItem(OPENKEY_TAB_KEY, "1"); } catch { /* Unmarked: sign-out then leaves OpenKey alone and says so. */ }
-}
-
-export function openKeySignedInHere(): boolean {
-  try { return window.sessionStorage.getItem(OPENKEY_TAB_KEY) === "1"; } catch { return false; }
-}
-
-export function forgetOpenKeySignedInHere(): void {
-  try { window.sessionStorage.removeItem(OPENKEY_TAB_KEY); } catch { /* Nothing stored. */ }
+  clearRenewalReceipt(LIBRARY_SESSION_PREFIX);
 }

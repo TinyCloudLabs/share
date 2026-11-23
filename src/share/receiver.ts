@@ -14,7 +14,7 @@ export async function createShareReceiverClient(
     : undefined;
   return TinyCloudWeb.create({
     ...(nodeHost === undefined ? {} : { tinycloudHosts: [nodeHost] }),
-    tinycloudFallbackHosts: null,
+    newUserHost: null,
     tinycloudRegistryUrl: nodeHost === undefined ? config.registryOrigin : null,
     autoDiscoverLocalNode: false,
     autoCreateSpace: false,

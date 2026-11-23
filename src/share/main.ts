@@ -9,7 +9,7 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
-import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
+import { forgetLibraryAccount, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
 import { NETWORK_SETUP_DECLINED } from "./history-copy.js";
 import { NetworkSetupDeclinedError } from "./network-setup-declined.js";
 import { StaleSessionError } from "./stale-session.js";
@@ -30,7 +30,7 @@ interface SenderApp {
 }
 
 /** `resume`: the OpenKey account of a library session saved on this device; the page then resumes it without a tap. */
-function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string): void {
+function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string | Promise<string>): void {
   const resumable = resume !== undefined;
   // The first attempt rebuilds a managed key's session without opening OpenKey; Continue after a failure connects as usual.
   let reopen = resume?.keyType === "MANAGED" ? resume : undefined;
@@ -58,7 +58,9 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
   const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button button-primary auth-button"; submit.textContent = resumable ? "Continue" : "Continue with OpenKey";
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
-  if (notice !== undefined) status.textContent = notice;
+  if (typeof notice === "string") status.textContent = notice;
+  // A notice that settles later (OpenKey's answer to a sign-out) only fills an empty line: a sign-in already under way keeps its own status.
+  else if (notice !== undefined) void notice.then((text) => { if (status.isConnected && status.textContent === "") status.textContent = text; });
   // A saved session resumes on its own (below), so there is nothing to press and nothing to claim unless that fails.
   submit.hidden = resumable;
   copy.hidden = resumable;
@@ -68,11 +70,7 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
     // A resume opens no OpenKey window: what it does first is reach the encrypted TinyCloud.
     status.textContent = account !== undefined ? "Connecting to your encrypted TinyCloud…" : "Loading secure sign-in…";
     void import("./openkey-session.js")
-      .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }).then((session) => {
-        // OpenKey connected in this tab, so it now holds a sign-in here that Sign out can end.
-        markOpenKeySignedInHere();
-        return session;
-      }))
+      .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }))
       .then((session) => proceed(session, status))
       .catch((error) => {
         // TC-335: `error.message` used to be rendered here verbatim. Everything
@@ -187,6 +185,8 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
   // A session saved before Share stopped asking for the whole encryption network still holds it, and the SDK restores it as is.
   // It is not kept: this device is signed out and the person signs in again, which asks for the current set only.
+  // OpenKey is not asked to stop a renewal here because none can exist: such a session predates the share/-only sign-in, and
+  // only that sign-in asks for a renewal, whose restores re-issue its own share/-only grant.
   if (holdsWholeNetworkAccess(tinycloud, session.address)) {
     await endSessionHere(tinycloud);
     throw new StaleSessionError();
@@ -204,6 +204,9 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   } catch (error) {
     if (error instanceof NetworkSetupDeclinedError) {
       // Declined: this is a sign-in that did not complete, so a reload shows a clean first sign-in.
+      // If the owner left renewal on, OpenKey keeps that renewal (share/ decrypt) for a session key this
+      // device has now forgotten, as after an unconfirmed Sign out. Stopping it needs OpenKey's confirm window, so it is not
+      // asked here; it ends at its limit or under Renewing permissions in OpenKey settings.
       await endSessionHere(tinycloud);
       throw error;
     }

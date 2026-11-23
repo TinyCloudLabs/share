@@ -275,6 +275,11 @@ try {
   // Share's sign-in asks to decrypt on its share/ prefix, so OpenKey must have shown its extra warning
   // and the smoke's "Allow and approve" must have been taken.
   assert((report.elevatedScreens ?? []).some((screen) => screen.during === "signIn" && screen.allowed), "sign-in: OpenKey's extra warning for Share's share/ decrypt was not shown and allowed");
+  // A request OpenKey splits ends in per-card choices (wholeRequest: false): every card on it must have been
+  // allowed at the moment Continue was pressed (TC-2933).
+  for (const screen of (report.elevatedScreens ?? []).filter((entry) => entry.during === "signIn" && entry.allowed && entry.wholeRequest === false)) {
+    assert(JSON.stringify(screen.allowedAtContinue) === JSON.stringify(screen.cards), "sign-in: a card of OpenKey's split warning was not allowed when Continue was pressed");
+  }
 
   setStage("share-create");
   writeFileSync(join(temporary, "smoke.md"), `# Share sender smoke\n\n${nonce}\n`);
@@ -316,14 +321,18 @@ try {
   assert.equal(report.prompts.resume, 0, `resuming the saved session needed ${report.prompts.resume} OpenKey approvals`);
   assert.equal(signaturesIn(requests, "share-resume"), 0, "resuming the saved session asked OpenKey for a signature");
 
-  // Sign-out clears the saved session: nothing is left under the library's prefix, and a reload is a plain sign-in.
+  // Sign-out clears the saved session: the only thing left under the library's prefix is the web SDK's marker that retires the signed-out session
+  // (`retired:<address>:<signature>`, written from SDK 3.12 on), and a reload is a plain sign-in.
   setStage("share-sign-out");
   await sender.click(".sender-signout");
   await sender.waitForSelector(".sender-confirm-dialog .sender-confirm-revoke", { timeout: 10_000 });
   await sender.click(".sender-confirm-dialog .sender-confirm-revoke");
   await sender.waitForSelector("form.auth-form", { timeout: 30_000 });
-  const saved = () => Object.keys(localStorage).filter((key) => key.startsWith("tinycloud-share-library-")).length;
-  assert.equal(await sender.evaluate(saved), 0, "sign-out left the library session saved");
+  // Key names only, with addresses and signatures blanked: any key but a retirement marker is a saved session left behind.
+  const leftBehind = () => Object.keys(localStorage)
+    .filter((key) => key.startsWith("tinycloud-share-library-") && !/^tinycloud-share-library-retired:0x[0-9a-fA-F]{40}:[^:]+$/.test(key))
+    .map((key) => key.slice("tinycloud-share-library-".length).replace(/0x[0-9a-fA-F]+/g, "<hex>"));
+  assert.deepEqual(await sender.evaluate(leftBehind), [], "sign-out left a saved library entry other than the session's retirement marker");
   await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
   await sender.waitForSelector("button.auth-button", { timeout: 60_000 });
   assert.equal(await sender.evaluate(wallHeading), "One key, your files", "a reload after sign-out still offered to resume");
