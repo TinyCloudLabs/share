@@ -1,0 +1,9 @@
+{
+  "app_id": "xyz.tinycloud.share",
+  "keys": [
+    {
+      "path": "apps/xyz.tinycloud.share/xyz.tinycloud.tinyapps.contacts/seal-v1",
+      "abilities": ["decrypt", "key.create"]
+    }
+  ]
+}
