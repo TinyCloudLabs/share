@@ -231,8 +231,8 @@ var words = {
   addMatch: "Add as a new person",
   importSelected: "Import selected",
   matchInFile: "Matches an earlier card in this file",
-  oneUnreadable: "card could not be read",
-  manyUnreadable: "cards could not be read",
+  oneUnreadable: "card couldn't be read",
+  manyUnreadable: "cards couldn't be read",
   fileLimit: "This file has too much information. Try a smaller vCard file.",
   waitingToImport: "Your space is busy. Trying again shortly.",
   noCards: "No named contact cards were found in this file.",
@@ -274,8 +274,8 @@ var words = {
   name: "Name",
   save: "Save card",
   cancel: "Cancel",
-  skippedEntry: "entry could not be shown",
-  skippedEntries: "entries could not be shown",
+  skippedEntry: "entry couldn't be shown",
+  skippedEntries: "entries couldn't be shown",
   loading: "Opening your address book\u2026",
   saving: "Saving\u2026",
   retry: "Reload contacts",
@@ -417,7 +417,7 @@ function contacts(kv2) {
     }
     return rows;
   }
-  async function load() {
+  async function load(historyKey = null) {
     unreadable.clear();
     for (const row of seedRecords(localDay(/* @__PURE__ */ new Date()), "owner")) {
       if (row.key === discoveryKey || await get(row.key, true) !== null)
@@ -432,7 +432,8 @@ function contacts(kv2) {
     const rows = (await folderRows("person/")).concat(await folderRows("note/"));
     const key = appId + "/me/me", value = await get(key, true);
     if (value) rows.push({ key, value });
-    return rows.concat([...localHistory.values()]);
+    const versions = historyKey ? await history(historyKey) : [...localHistory.values()];
+    return rows.concat(versions);
   }
   function history(key) {
     return folderRows("history/", parseKey(key).person);
@@ -541,6 +542,7 @@ var fields = new Map(
   })
 );
 var lists = /* @__PURE__ */ new Set(["EMAIL", "TEL", "ADR", "URL", "CATEGORIES"]);
+var maxRawVcardBytes = 50 * 1024 * 1024;
 var maxVcardBytes = 5 * 1024 * 1024;
 var maxCards = 2e3;
 var maxProperties = 4096;
@@ -548,6 +550,15 @@ var maxPhysicalLines = 16384;
 var quotedPrintable = /;ENCODING="?QUOTED-PRINTABLE"?(?:;|$)/i;
 function limit(ok) {
   if (!ok) throw new RangeError("vCard limit exceeded");
+}
+function utf8Bytes(text) {
+  if (!/[^\x00-\x7f]/.test(text)) return text.length;
+  let size = 0;
+  for (const char of text) {
+    const cp = char.codePointAt(0);
+    size += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4;
+  }
+  return size;
 }
 function* unfold(text) {
   const ends = /\r\n|[\r\n]/g;
@@ -559,20 +570,31 @@ function* unfold(text) {
   let length = 0;
   let quoted = false;
   let fileLines = 0;
+  let keptBytes = start ? 3 : 0;
+  let skipMedia = false;
+  const media = /(?:[a-z0-9-]+\.)?(?:photo|logo|sound)(?=[;:])/iy;
   while (start < text.length) {
-    limit(++fileLines <= 131072);
+    const lineStart = start;
     const end = ends.exec(text);
-    let next = text.slice(start, end?.index ?? text.length);
     start = end ? ends.lastIndex : text.length;
-    const folded = /^[ \t]/.test(next);
-    if (pieces.length && !soft && !folded) {
-      yield { line: pieces.join(""), physical: pieces.length, colon };
-      pieces = [];
-      qp = false;
-      colon = -1;
-      length = 0;
-      quoted = false;
+    const first = text[lineStart];
+    const folded = first === " " || first === "	";
+    if (!soft && !folded) {
+      if (pieces.length) {
+        yield { line: pieces.join(""), physical: pieces.length, colon };
+        pieces = [];
+        qp = false;
+        colon = -1;
+        length = 0;
+        quoted = false;
+      }
+      media.lastIndex = lineStart;
+      skipMedia = media.test(text);
     }
+    if (skipMedia) continue;
+    let next = text.slice(lineStart, end?.index ?? text.length);
+    keptBytes += utf8Bytes(next) + (end?.[0].length ?? 0);
+    limit(keptBytes <= maxVcardBytes && ++fileLines <= 131072);
     limit(pieces.length < maxPhysicalLines);
     if (soft) pieces[pieces.length - 1] = pieces.at(-1).slice(0, -1);
     if (folded) next = next.slice(1);
@@ -620,9 +642,7 @@ function parts(value, separator) {
   return [...result2, part];
 }
 function parseVcardFile(text) {
-  limit(
-    text.length <= maxVcardBytes && new TextEncoder().encode(text).length <= maxVcardBytes
-  );
+  limit(text.length <= maxRawVcardBytes && utf8Bytes(text) <= maxRawVcardBytes);
   const cards = [];
   let card2, version, fallback, malformed, properties, physicalLines;
   let started = 0;
@@ -857,7 +877,7 @@ function ImportCards({ rows, book: book2, close }) {
     setError("");
     setUnreadable(0);
     try {
-      if (file2.size > maxVcardBytes) {
+      if (file2.size > maxRawVcardBytes) {
         setError(words.fileLimit);
         return;
       }
@@ -879,7 +899,6 @@ function ImportCards({ rows, book: book2, close }) {
   async function save() {
     if (running.current) return;
     running.current = true;
-    setProgress({ done: 0, total: entries.length });
     setResult(
       await importSelected(
         book2,
@@ -1060,12 +1079,13 @@ function changedCardFields(inputs, prior = {}) {
       for (const [index, value] of inputs.getAll(key).entries()) {
         if (index < original.length && value === formText(original[index]))
           next.push(original[index]);
-        else if (value !== "") next.push(value);
+        else if (value.trim()) next.push(value);
       }
       if (next.length !== original.length || next.some((value, index) => value !== original[index]))
         fields2[key] = next;
     } else {
       const value = inputs.get(key);
+      if (!formText(original) && !value.trim()) continue;
       if (value !== formText(original)) fields2[key] = value;
     }
   }
@@ -1220,7 +1240,7 @@ function Contacts() {
         const changed = book.changes();
         setRows((current2) => mergeRows(current2, changed));
       } else {
-        const fresh = await book.load();
+        const fresh = await book.load(tab === "history" ? key : null);
         setRows(fresh);
         if (!key && !window.matchMedia("(max-width:660px)").matches) {
           select(people(fresh)[0]?.key || null);

@@ -5,13 +5,13 @@
   "files": [
     {
       "path": "app.jsx",
-      "sha256": "85963710a242ddef4dcceb107094b700fa07d7a3545f434f376df776cd2a3ba4",
-      "size": 60976
+      "sha256": "33af2faf80bc171a52de679e4c1093220bd832259c30797229cb7de1f097b560",
+      "size": 61785
     },
     {
       "path": "copy.js",
-      "sha256": "f089ba4358cb364047e6f9286001c696c52192614dfb059491cbd3fcb6f8a22e",
-      "size": 4239
+      "sha256": "bb43cff29d8241b6b337a37160cf1b9991bc24b7bc675fd954ab2b4427a830e9",
+      "size": 4235
     },
     {
       "path": "knowledge/index.md",
@@ -24,5 +24,5 @@
       "size": 2143
     }
   ],
-  "digest": "837666d9fbd2a4f6613a71af374398094077ec832dd307cf8cb15c693c78a333"
+  "digest": "af87715c7d46591f667bca38d81cd2d9c250b38e1ec584b45229702d1c5b0a99"
 }
