@@ -380,6 +380,62 @@
         "root": "/apps/b/87a866d8ec97a106d35a11ecf849fd8eb447dcbef0a88809e5a51c263066d2b4/knowledge/",
         "digest": "913f7a775de7e44cf642f13974c4f07d6ee27d5136ff77e27a65517586b4ac57"
       }
+    },
+    {
+      "app_id": "xyz.tinycloud.tinyapps.contacts",
+      "name": "Contacts",
+      "description": "Keep the people you know, and what you learn about them, in one place.",
+      "publisher": {
+        "name": "TinyCloud"
+      },
+      "source": {
+        "repo": "https://github.com/TinyCloudLabs/tinycloud-contacts",
+        "tag": "v0.1.0-pre.2",
+        "commit": "ad43e199a5a08f60524ae0a4f4a7968299e7d51d"
+      },
+      "release": {
+        "version": "0.1.0",
+        "digest": "12a1e4c1b13cf05bb96c505c42d26cb2e68e4ba3442968e5a73a4ba7f1b152e1"
+      },
+      "manifest": {
+        "path": "manifest.json",
+        "sha256": "b527f3b30c9d7e12d17d838457a7121f0e8c3be7e710d5a6abbb93b5f1ed90b1"
+      },
+      "bundle": {
+        "root": "/apps/b/0ac5989954477202c0daca0a3d3803530e51cf5272b3ad7adb7dd5b92f285fce/",
+        "files": [
+          {
+            "path": "app.jsx",
+            "sha256": "b4a6a060d6d80afdd2482e5b5740ed86fec084870d84a9bc06c5284927fb8c77",
+            "size": 50764
+          },
+          {
+            "path": "copy.js",
+            "sha256": "f9e532121bcff6186110f95be5655332c753ef29ecd99451b8390f0edb83d291",
+            "size": 3463
+          },
+          {
+            "path": "knowledge/index.md",
+            "sha256": "cb891500a69956b7c3b511aa3f9215111f07d8ebafa98ef52e91bf69e77c36f8",
+            "size": 10485
+          },
+          {
+            "path": "manifest.json",
+            "sha256": "b527f3b30c9d7e12d17d838457a7121f0e8c3be7e710d5a6abbb93b5f1ed90b1",
+            "size": 2143
+          },
+          {
+            "path": "release.json",
+            "sha256": "fbb263e55beece4d5661f798ffbd1c7fb68df39bc0026455395a7fd5f7b11818",
+            "size": 792
+          }
+        ],
+        "digest": "0ac5989954477202c0daca0a3d3803530e51cf5272b3ad7adb7dd5b92f285fce"
+      },
+      "knowledge": {
+        "root": "/apps/b/0ac5989954477202c0daca0a3d3803530e51cf5272b3ad7adb7dd5b92f285fce/knowledge/",
+        "digest": "4319c89357b913c43ecdb7e6bb1ed8976de1af74f5a31e4725fa507d4ea260ff"
+      }
     }
   ]
 }
