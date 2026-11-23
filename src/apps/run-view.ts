@@ -141,7 +141,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const cancelSlot = el("div", "run-status-cancel", []);
   status.replaceChildren(statusLine);
   // A file the app offers waits here, outside the frame, until the owner saves or dismisses it.
-  const offers = createFileOffers({ view, appName: () => running?.app.name ?? entry?.name ?? "The app", announce: (text, tone) => setStatus(text, tone), ...(options.saveFile === undefined ? {} : { save: options.saveFile }) });
+  const offers = createFileOffers({ view, appName: () => running?.app.name ?? entry?.name ?? "The app", announce: (text, tone) => setStatus(text, tone), focusTarget: title, ...(options.saveFile === undefined ? {} : { save: options.saveFile }) });
   const access = el("details", "apps-files run-details", [el("summary", null, ["What this app can do"])]);
   access.hidden = true;
   const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, ["The sandbox blocks the requests a page makes itself, but some browser requests can't be blocked, so a page can still reveal that you opened it: your IP address and the time."]), el("p", null, [KNOWN_LIMITS])]);
