@@ -19,7 +19,7 @@
  * path in the space and is allowed only where a `skipPrefix` grant of the manifest
  * covers it (the Recipes sample reads the Health Log database that way). The frame
  * cannot name a service, a space, a delegation or another session: the only things
- * it can say are the six operations below.
+ * it can say are the seven operations below: six for data and one that offers a file to save.
  *
  * `sql.execute` is limited to the app's OWN databases (a relative `db`), whatever the
  * manifest says: TC-1581 (the node lets a write ability run DDL) is not something
@@ -32,6 +32,13 @@
 import { CAP_ID_PATTERN, CAP_LIMITS, CAP_OPS, CAP_TYPE_PREFIX, CAP_MAX_ERROR_CHARS, capError, type CapError, type CapErrorCode, type CapOp, type CapResult } from "../artifact/jsx-runtime/cap-protocol.js";
 import type { Authorizer, BridgeAction } from "./grants.ts";
 import { classifySql } from "./sql-class.ts";
+import { checkSaveFile, type SaveFile } from "./save-file.ts";
+
+/** Where the runner shows the owner a file an app offers; the owner's click, not the app, saves it. */
+export interface FileOffers {
+  /** True when the offer is now showing; false while an earlier one still waits. */
+  offer(file: SaveFile): boolean;
+}
 
 /** The SDK's result shape, as the data port returns it. */
 export type PortResult<T> = { readonly ok: true; readonly data: T } | { readonly ok: false; readonly error: { readonly code?: string; readonly message?: string } };
@@ -61,6 +68,8 @@ export interface BridgeOptions {
   readonly reply: (id: string, result: CapResult) => void;
   /** False once the runtime session has ended: every call then answers NOT_CONNECTED. */
   readonly isLive?: () => boolean;
+  /** Where `file.save` offers go: the runner's bar. `offer` returns false while an earlier offer still waits. Without it the call is unknown. */
+  readonly files?: FileOffers;
   readonly limits?: Partial<typeof CAP_LIMITS>;
 }
 
@@ -127,6 +136,7 @@ const KEYS: Record<CapOp, readonly string[]> = {
   "kv.del": ["key"],
   "sql.query": ["db", "sql", "params"],
   "sql.execute": ["db", "sql", "params"],
+  "file.save": ["name", "type", "body"],
 };
 
 /**
@@ -259,6 +269,15 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       } };
   }
 
+  /** `file.save`: checks the file, then hands it to the runner to show the owner. Nothing is written anywhere; no manifest grant is involved. */
+  function prepareFile(args: Record<string, unknown>): Prepared | CapError {
+    const offers = options.files;
+    if (offers === undefined) return fail("BAD_REQUEST", "Unknown call.");
+    const checked = checkSaveFile(args);
+    if (!checked.ok) return fail("BAD_REQUEST", checked.message);
+    return { run: async () => (closed ? fail("NOT_CONNECTED", "The app has stopped.") : offers.offer(checked.file) ? { ok: true } : fail("BUSY", "Not now: a file is waiting for the owner to save or dismiss it, or the owner has only just answered one.")) };
+  }
+
   function safeReply(id: string, result: CapResult): void {
     if (closed) return;
     try { options.reply(id, result); } catch { /* the frame is gone */ }
@@ -312,7 +331,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
         if (held.size >= limits.maxInFlight) { safeReply(id, fail("BUSY", `More than ${limits.maxInFlight} calls in flight.`)); return; }
         const allowed = KEYS[op as CapOp];
         if (Object.keys(args).some((key) => !allowed.includes(key))) { safeReply(id, fail("BAD_REQUEST", `Unexpected argument for ${op}.`)); return; }
-        const prepared = op.startsWith("kv.") ? prepareKv(op as Extract<CapOp, `kv.${string}`>, args) : prepareSql(op as "sql.query" | "sql.execute", args);
+        const prepared = op === "file.save" ? prepareFile(args) : op.startsWith("kv.") ? prepareKv(op as Extract<CapOp, `kv.${string}`>, args) : prepareSql(op as "sql.query" | "sql.execute", args);
         if ("run" in prepared) start(id, prepared); else safeReply(id, prepared);
       } catch {
         if (id !== undefined) safeReply(id, fail("INTERNAL", "The call failed."));
