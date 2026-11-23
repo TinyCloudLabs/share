@@ -5,18 +5,18 @@
   "files": [
     {
       "path": "app.jsx",
-      "sha256": "81b7ba930a2eb850ff2d68fa0b78ca9ba3a507c67efb3bd57ff17b12518a1419",
-      "size": 52554
+      "sha256": "85963710a242ddef4dcceb107094b700fa07d7a3545f434f376df776cd2a3ba4",
+      "size": 60976
     },
     {
       "path": "copy.js",
-      "sha256": "903fdf78d07502e61ee4f8654a0aafefe2d0dad82e74a0fd430b574382438d3b",
-      "size": 3857
+      "sha256": "f089ba4358cb364047e6f9286001c696c52192614dfb059491cbd3fcb6f8a22e",
+      "size": 4239
     },
     {
       "path": "knowledge/index.md",
-      "sha256": "cb891500a69956b7c3b511aa3f9215111f07d8ebafa98ef52e91bf69e77c36f8",
-      "size": 10485
+      "sha256": "e47799cc1739e8ae275064647603e58d502840a47e27b8d788a5829f074c38fc",
+      "size": 10997
     },
     {
       "path": "manifest.json",
@@ -24,5 +24,5 @@
       "size": 2143
     }
   ],
-  "digest": "db6a416e07bd75de5e61c6cf3a3a101707167e21d00060428857f5f473a0319b"
+  "digest": "837666d9fbd2a4f6613a71af374398094077ec832dd307cf8cb15c693c78a333"
 }

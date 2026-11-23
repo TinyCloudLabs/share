@@ -51,7 +51,7 @@ var slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*-[a-f0-9]{8}$/;
 var subject = (slug) => slug === "me" || matches(slug, slugPattern);
 function makeSlug(name) {
   check(nonempty(name), "Expected a name");
-  const stem = name.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "person";
+  const stem = name.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-/, "").slice(0, 40).replace(/-$/, "") || "person";
   return stem + "-" + crypto.randomUUID().slice(0, 8);
 }
 function day(value) {
@@ -79,6 +79,10 @@ function equal(a, b) {
   if (!(object(a) && object(b) || Array.isArray(a) && Array.isArray(b))) return false;
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && equal(a[k], b[k]));
+}
+function containsSeed(value, seed) {
+  if (!object(seed)) return value === seed;
+  return object(value) && Object.entries(seed).every(([name, meaning]) => Object.hasOwn(value, name) && containsSeed(value[name], meaning));
 }
 function parseKey(key) {
   check(matches(key, /^[A-Za-z0-9/._~:+@=,-]+$/), "Invalid key character");
@@ -109,7 +113,7 @@ function validate({ key, value }) {
   if (kind === "catalog" || kind === "discovery") {
     if (kind === "catalog") check(day(value.created) && clients.includes(value.by), "Invalid catalog attribution");
     const seed = seedRecords(value.created, value.by).find((row) => row.key === key);
-    check(equal(value, seed.value), "Unexpected seed fields or meanings");
+    check(kind === "discovery" ? equal(value, seed.value) : containsSeed(value, seed.value), "Unexpected seed fields or meanings");
   } else if (kind === "person" || kind === "me") {
     card(value);
   } else {
@@ -153,16 +157,26 @@ function currentNotes(rows) {
     parents.set(key, parent);
     if (parent) replaced.add(parent);
   }
+  const roots = /* @__PURE__ */ new Map();
+  const loops = /* @__PURE__ */ new Set();
+  function rootOf(key) {
+    const path = /* @__PURE__ */ new Set();
+    while (parents.get(key) && !roots.has(key)) {
+      if (path.has(key)) {
+        loops.add(key);
+        break;
+      }
+      path.add(key);
+      key = parents.get(key);
+    }
+    const root = roots.get(key) ?? key;
+    for (const member of path) roots.set(member, root);
+    return root;
+  }
   const latest = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    if (replaced.has(row.key)) continue;
-    let root = row.key;
-    const seen = /* @__PURE__ */ new Set();
-    while (parents.get(root)) {
-      check(!seen.has(root), "Circular note correction");
-      seen.add(root);
-      root = parents.get(root);
-    }
+    const root = rootOf(row.key);
+    if (replaced.has(row.key) && !loops.has(root)) continue;
     const previous = latest.get(root);
     if (!previous || row.key.localeCompare(previous.key, "en", { numeric: true }) > 0) latest.set(root, row);
   }
@@ -197,7 +211,7 @@ function restore(options, saved) {
 var words = {
   title: "Contacts",
   purpose: "Keep the people you know, and what you learn about them, in one place.",
-  privacy: "Your contacts are kept in your own TinyCloud space; apps can open it only with your approval.",
+  privacy: "Your contacts are kept in your own TinyCloud space. Apps can open them only with your approval.",
   people: "People",
   search: "Search people",
   add: "Add person",
@@ -205,9 +219,8 @@ var words = {
   own: "My card",
   menu: "Options",
   about: "About this app",
-  location: "Records live in the applications space under",
+  location: "Saved in your TinyCloud as",
   import: "Import",
-  export: "Export",
   exportAll: "Export all",
   exportOne: "Export this person",
   pick: "Choose a vCard file (.vcf)",
@@ -217,8 +230,13 @@ var words = {
   skipCard: "Skip this card",
   addMatch: "Add as a new person",
   importSelected: "Import selected",
+  matchInFile: "Matches an earlier card in this file",
+  oneUnreadable: "card could not be read",
+  manyUnreadable: "cards could not be read",
+  fileLimit: "This file has too much information. Try a smaller vCard file.",
+  waitingToImport: "Your space is busy. Trying again shortly.",
   noCards: "No named contact cards were found in this file.",
-  unreadable: "This file could not be read.",
+  unreadable: "This file couldn't be read. Check that it's a vCard (.vcf) file.",
   progress: "Cards checked",
   summary: "Import complete",
   added: "Added",
@@ -230,11 +248,11 @@ var words = {
   saveFile: "Save file",
   copyInstead: "Copy the text instead",
   fileReady: "The file is ready. Look for the Save button in the bar above the app.",
-  fileWaiting: "Finish the file waiting above first.",
-  noFileOffer: "This version of Share can only export by copying text.",
-  fileError: "Share could not offer this file.",
-  fileTooLarge: "This file is too large for Share to offer.",
-  exportHelp: "Select the text, copy it, and save it as contacts.vcf in a plain text editor.",
+  fileWaiting: "Save or close the file in the bar above first.",
+  noFileOffer: "Files can't be saved from here. Copy the text instead.",
+  fileError: "This file couldn't be saved. Copy the text instead.",
+  fileTooLarge: "This file is too large to save. Copy the text instead.",
+  exportHelp: "Select the text and copy it. Then save it as contacts.vcf in a plain text editor.",
   selectText: "Select all text",
   vcardText: "vCard text",
   back: "Back to people",
@@ -247,18 +265,17 @@ var words = {
   choose: "Open a card",
   chooseText: "Choose someone from your people to see their details and notes.",
   profile: "Profile",
-  notes: "Notes",
   history: "History",
-  noNotes: "No notes yet.",
   noHistory: "No earlier versions yet.",
   noDetails: "No details added yet.",
   restore: "Restore this version",
-  first: "Card created",
   agent: "Agent",
   owner: "You",
   name: "Name",
   save: "Save card",
   cancel: "Cancel",
+  skippedEntry: "entry could not be shown",
+  skippedEntries: "entries could not be shown",
   loading: "Opening your address book\u2026",
   saving: "Saving\u2026",
   retry: "Reload contacts",
@@ -297,12 +314,12 @@ var words = {
     TOO_LARGE: "There is too much information to open or save at once.",
     BUSY: "Your space is busy. Try again shortly.",
     TIMEOUT: "Your space took too long to answer. Reload to check what was saved.",
-    NOT_CONNECTED: "Your connection ended. Open Contacts again.",
+    NOT_CONNECTED: "Your connection ended. Close Contacts and open it to connect.",
     PRECONDITION_FAILED: "This card changed. Reload to see the latest version.",
-    NOT_FOUND: "This item could not be found.",
-    BAD_REQUEST: "These details could not be read.",
-    SQL_ERROR: "Your space could not finish the request.",
-    INTERNAL: "Your space could not finish the request."
+    NOT_FOUND: "This couldn't be found. It may have been removed.",
+    BAD_REQUEST: "These details couldn't be read.",
+    SQL_ERROR: "Something went wrong. Try again.",
+    INTERNAL: "Something went wrong. Try again."
   }
 };
 
@@ -327,59 +344,111 @@ function result(reply) {
 function localDay(d) {
   return [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((x) => String(x).padStart(2, "0")).join("-");
 }
+var sendOnce = (call) => call();
 function contacts(kv2) {
   const relative = (key) => key.slice(appId.length + 1);
-  async function get(key) {
-    const reply = await kv2.get(relative(key));
-    if (!reply.ok && reply.error.code === "NOT_FOUND") return null;
-    const value = JSON.parse(new TextDecoder().decode(result(reply).bytes));
-    validate({ key, value });
-    return value;
+  const changedRows = /* @__PURE__ */ new Map();
+  const localHistory = /* @__PURE__ */ new Map();
+  const unreadable = /* @__PURE__ */ new Set();
+  const waiting = [];
+  let active = 0;
+  async function read(call) {
+    if (active === 3) await new Promise((resolve) => waiting.push(resolve));
+    else active++;
+    try {
+      return await call();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active--;
+    }
   }
-  async function put(row, create) {
+  async function get(key, tolerant = false, send = sendOnce) {
+    const reply = await send(() => read(() => kv2.get(relative(key))));
+    if (!reply.ok && reply.error.code === "NOT_FOUND") return null;
+    const { bytes } = result(reply);
+    try {
+      const value = JSON.parse(new TextDecoder().decode(bytes));
+      validate({ key, value });
+      unreadable.delete(key);
+      return value;
+    } catch (error) {
+      if (!tolerant) throw error;
+      unreadable.add(key);
+      return void 0;
+    }
+  }
+  async function put(row, create, send = sendOnce) {
     const opts = { contentType: "application/json" };
     if (create) opts.ifNoneMatch = true;
-    const reply = await kv2.put(
-      relative(row.key),
-      JSON.stringify(row.value),
-      opts
-    );
+    const body = JSON.stringify(row.value);
+    const reply = await send(() => kv2.put(relative(row.key), body, opts));
     if (!reply.ok && reply.error.code !== "TIMEOUT") result(reply);
-    const actual = await get(row.key);
+    const actual = await get(row.key, false, send);
     if (JSON.stringify(actual) !== JSON.stringify(row.value))
       fail(reply.ok ? "PRECONDITION_FAILED" : "TIMEOUT");
+    const kind = parseKey(row.key).kind;
+    if (kind !== "catalog") {
+      changedRows.set(row.key, row);
+      if (kind === "history") localHistory.set(row.key, row);
+    }
   }
-  async function load() {
-    for (const row of seedRecords(localDay(/* @__PURE__ */ new Date()), "owner")) {
-      if (row.key === discoveryKey || await get(row.key)) continue;
+  async function folderRows(folder, person) {
+    const listing = result(await read(() => kv2.list(folder)));
+    if (listing.truncated) fail("TOO_LARGE");
+    const keys = [];
+    for (const path of listing.keys) {
+      const key = appId + "/" + path;
       try {
-        await put(row, true);
-      } catch (e) {
-        if (e.code !== "PRECONDITION_FAILED" || !await get(row.key)) throw e;
+        if (!path.startsWith(folder)) throw new TypeError();
+        const parsed = parseKey(key);
+        if (!person || parsed.person === person) keys.push(key);
+      } catch {
+        unreadable.add(key);
       }
     }
     const rows = [];
-    for (const folder of ["person/", "history/", "note/"]) {
-      const listing = result(await kv2.list(folder));
-      if (listing.truncated) fail("TOO_LARGE");
-      for (const path of listing.keys) {
-        const key2 = appId + "/" + path;
-        if (!path.startsWith(folder)) fail("BAD_REQUEST");
-        const value2 = await get(key2);
-        if (value2) rows.push({ key: key2, value: value2 });
+    for (let start = 0; start < keys.length; start += 3) {
+      const group = keys.slice(start, start + 3);
+      const values = await Promise.all(group.map((key) => get(key, true)));
+      for (const [index, value] of values.entries()) {
+        if (value) rows.push({ key: group[index], value });
       }
     }
-    const key = appId + "/me/me", value = await get(key);
-    if (value) rows.push({ key, value });
     return rows;
   }
-  async function save({ key, expected, name, fields: fields2, saved }, createAction = "create") {
+  async function load() {
+    unreadable.clear();
+    for (const row of seedRecords(localDay(/* @__PURE__ */ new Date()), "owner")) {
+      if (row.key === discoveryKey || await get(row.key, true) !== null)
+        continue;
+      try {
+        await put(row, true);
+      } catch (e) {
+        if (e.code !== "PRECONDITION_FAILED" || await get(row.key, true) === null)
+          throw e;
+      }
+    }
+    const rows = (await folderRows("person/")).concat(await folderRows("note/"));
+    const key = appId + "/me/me", value = await get(key, true);
+    if (value) rows.push({ key, value });
+    return rows.concat([...localHistory.values()]);
+  }
+  function history(key) {
+    return folderRows("history/", parseKey(key).person);
+  }
+  function changes() {
+    const rows = [...changedRows.values()];
+    changedRows.clear();
+    return rows;
+  }
+  async function save({ key, expected, name, fields: fields2, saved }, createAction = "create", send = sendOnce) {
     if (!key) {
       do {
         key = appId + "/person/" + makeSlug(name);
-      } while (await get(key));
+      } while (await get(key, false, send));
     }
-    const current = await get(key);
+    const current = await get(key, false, send);
     if (JSON.stringify(current) !== JSON.stringify(expected ?? null))
       fail("PRECONDITION_FAILED");
     const now = /* @__PURE__ */ new Date(), day2 = localDay(now);
@@ -398,20 +467,20 @@ function contacts(kv2) {
         ...options,
         action: current ? "update" : createAction,
         data: {
-          name: name.trim(),
+          name: name === current?.data.name ? name : name.trim(),
           added: current?.data.added || day2,
           private: { ...current?.data.private, ...fields2 }
         }
       });
       try {
-        await put(writes[0], true);
+        await put(writes[0], true, send);
       } catch (e) {
         if (e.code === "PRECONDITION_FAILED") continue;
         throw e;
       }
-      if (JSON.stringify(await get(key)) !== JSON.stringify(current))
+      if (JSON.stringify(await get(key, false, send)) !== JSON.stringify(current))
         fail("PRECONDITION_FAILED");
-      await put(writes[1], !current);
+      await put(writes[1], !current, send);
       return key;
     }
   }
@@ -439,10 +508,18 @@ function contacts(kv2) {
       }
     }
   }
-  function importCard({ name, private: fields2 }) {
-    return save({ name, fields: fields2 }, "import");
+  function importCard({ name, private: fields2 }, send) {
+    return save({ name, fields: fields2 }, "import", send);
   }
-  return { load, save, append, importCard };
+  return {
+    load,
+    save,
+    append,
+    history,
+    changes,
+    importCard,
+    skipped: () => unreadable.size
+  };
 }
 
 // src/Transfer.jsx
@@ -464,24 +541,58 @@ var fields = new Map(
   })
 );
 var lists = /* @__PURE__ */ new Set(["EMAIL", "TEL", "ADR", "URL", "CATEGORIES"]);
-var header = /^((?:[^":]|"[^"]*")*):([\s\S]*)$/u;
-var quotedPrintable = /;ENCODING="?QUOTED-PRINTABLE"?(?:;|:)/i;
+var maxVcardBytes = 5 * 1024 * 1024;
+var maxCards = 2e3;
+var maxProperties = 4096;
+var maxPhysicalLines = 16384;
+var quotedPrintable = /;ENCODING="?QUOTED-PRINTABLE"?(?:;|$)/i;
+function limit(ok) {
+  if (!ok) throw new RangeError("vCard limit exceeded");
+}
 function* unfold(text) {
-  let line = "";
+  const ends = /\r\n|[\r\n]/g;
+  let start = text.startsWith("\uFEFF") ? 1 : 0;
+  let pieces = [];
   let qp = false;
-  for (const next of text.replace(/^\uFEFF/, "").split(/\r\n|\n|\r/)) {
+  let soft = false;
+  let colon = -1;
+  let length = 0;
+  let quoted = false;
+  let fileLines = 0;
+  while (start < text.length) {
+    limit(++fileLines <= 131072);
+    const end = ends.exec(text);
+    let next = text.slice(start, end?.index ?? text.length);
+    start = end ? ends.lastIndex : text.length;
     const folded = /^[ \t]/.test(next);
-    if (qp && line.endsWith("=")) {
-      line = line.slice(0, -1) + (folded ? next.slice(1) : next);
-    } else if (folded) {
-      line += next.slice(1);
-    } else {
-      if (line) yield line;
-      line = next;
-      qp = quotedPrintable.test(next.split(":", 1)[0] + ":");
+    if (pieces.length && !soft && !folded) {
+      yield { line: pieces.join(""), physical: pieces.length, colon };
+      pieces = [];
+      qp = false;
+      colon = -1;
+      length = 0;
+      quoted = false;
     }
+    limit(pieces.length < maxPhysicalLines);
+    if (soft) pieces[pieces.length - 1] = pieces.at(-1).slice(0, -1);
+    if (folded) next = next.slice(1);
+    pieces.push(next);
+    if (colon < 0) {
+      for (let i = 0; i < next.length; i++) {
+        if (next[i] === '"') quoted = !quoted;
+        else if (next[i] === ":" && !quoted) {
+          const spec = pieces.length === 1 ? next.slice(0, i) : pieces.slice(0, -1).join("") + next.slice(0, i);
+          qp = quotedPrintable.test(spec);
+          colon = length + i;
+          break;
+        }
+      }
+    }
+    length += next.length;
+    soft = qp && next.endsWith("=");
   }
-  if (line) yield line;
+  if (pieces.length)
+    yield { line: pieces.join(""), physical: pieces.length, colon };
 }
 var decoder = new TextDecoder();
 function decodeBytes(value) {
@@ -508,41 +619,65 @@ function parts(value, separator) {
   }
   return [...result2, part];
 }
-function parseVcards(text) {
+function parseVcardFile(text) {
+  limit(
+    text.length <= maxVcardBytes && new TextEncoder().encode(text).length <= maxVcardBytes
+  );
   const cards = [];
-  let card2, version, fallback;
-  for (const line of unfold(text)) {
+  let card2, version, fallback, malformed, properties, physicalLines;
+  let started = 0;
+  let unreadable = 0;
+  for (const { line, physical, colon } of unfold(text)) {
     if (/^BEGIN:VCARD$/i.test(line)) {
+      limit(++started <= maxCards);
+      if (card2) unreadable++;
       card2 = { name: "", private: {} };
       version = fallback = "";
+      malformed = false;
+      properties = 0;
+      physicalLines = physical;
       continue;
     }
     if (!card2) continue;
+    physicalLines += physical;
+    limit(physicalLines <= maxPhysicalLines);
     if (/^END:VCARD$/i.test(line)) {
-      if (!card2.name.trim()) card2.name = fallback;
-      if (card2.name.trim() && ["3.0", "4.0"].includes(version)) cards.push(card2);
+      if (!card2.name) card2.name = fallback;
+      if (!malformed && card2.name.trim() && ["3.0", "4.0"].includes(version))
+        cards.push(card2);
+      else unreadable++;
       card2 = null;
       continue;
     }
-    const match = header.exec(line);
-    if (!match) continue;
-    const spec = match[1];
-    const prop = spec.split(";", 1)[0].split(".").pop().toUpperCase();
+    if (!line) continue;
+    limit(++properties <= maxProperties);
+    if (colon < 1) {
+      malformed = true;
+      continue;
+    }
+    const spec = line.slice(0, colon);
+    const rawValue = line.slice(colon + 1);
+    const groupName = spec.split(";", 1)[0];
+    const prop = groupName.slice(groupName.lastIndexOf(".") + 1).toUpperCase();
     const extension = /^X-TINYCLOUD-(\w+)-JSON$/.exec(prop);
     if (extension && fields.has(extension[1])) {
       try {
-        card2.private[fields.get(extension[1])] = JSON.parse(parts(match[2])[0]);
+        card2.private[fields.get(extension[1])] = JSON.parse(parts(rawValue)[0]);
       } catch {
       }
       continue;
     }
     const field = fields.get(prop);
     if (!field && !["VERSION", "FN", "N"].includes(prop)) continue;
-    const value = quotedPrintable.test(spec + ":") ? decodeBytes(match[2]) : match[2];
+    const value = quotedPrintable.test(spec) ? decodeBytes(rawValue) : rawValue;
     if (prop === "VERSION") {
+      if (version) malformed = true;
       version = value.trim();
     } else if (prop === "FN") {
-      if (!card2.name.trim()) card2.name = parts(value)[0];
+      if (!card2.name) {
+        const name = parts(value)[0];
+        if (name.trim()) card2.name = name;
+      }
     } else if (prop === "N") {
       const [family, given, middle, prefix, suffix] = parts(value, ";");
       fallback = [prefix, given, middle, family, suffix].filter(Boolean).join(" ");
@@ -563,13 +698,16 @@ function parseVcards(text) {
       if (shape === "EMPTY") values = [];
       const prior = card2.private[field];
       if (prior !== void 0 || shape === "LIST" || shape === "EMPTY" || lists.has(prop) && shape !== "TEXT" || values.length > 1) {
-        card2.private[field] = [].concat(prior ?? [], values);
+        const list = Array.isArray(prior) ? prior : prior == null ? [] : [prior];
+        for (const item of values) list.push(item);
+        card2.private[field] = list;
       } else {
         card2.private[field] = values[0];
       }
     }
   }
-  return cards;
+  if (card2) unreadable++;
+  return { cards, unreadable };
 }
 var escape = (value) => value.replace(/\\/g, "\\\\").replace(/\r\n|\r|\n/g, "\\n").replace(/[,;]/g, (char) => "\\" + char);
 function fold(line) {
@@ -649,9 +787,13 @@ function matchKeys(card2) {
 }
 function previewImport(candidates, peopleRows) {
   const known = new Set(peopleRows.flatMap((row) => matchKeys(row.value.data)));
+  const earlier = /* @__PURE__ */ new Set();
   return candidates.map((card2) => {
-    const match = matchKeys(card2).some((key) => known.has(key));
-    return { card: card2, match, selected: !match };
+    const keys = matchKeys(card2);
+    const matchInFile = keys.some((key) => earlier.has(key));
+    const match = matchInFile || keys.some((key) => known.has(key));
+    for (const key of keys) earlier.add(key);
+    return { card: card2, match, matchInFile, selected: !match };
   });
 }
 async function importSelected(book2, entries, progress = () => {
@@ -662,31 +804,48 @@ async function importSelected(book2, entries, progress = () => {
     skipped: entries.length - selected.length,
     failed: []
   };
-  progress(0, selected.length);
-  for (let start = 0; start < selected.length; start += 4) {
-    const batch = selected.slice(start, start + 4);
-    const replies = await Promise.allSettled(
-      batch.map(({ card: card2 }) => book2.importCard(card2))
-    );
-    for (const [index, reply] of replies.entries()) {
-      if (reply.status === "fulfilled") summary.added++;
-      else
-        summary.failed.push({
-          name: batch[index].card.name,
-          code: reply.reason?.code || "INTERNAL"
-        });
+  const failures = [];
+  let next = 0, done = 0, waiting = 0;
+  const update = () => progress(done, selected.length, waiting > 0);
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  async function send(call) {
+    for (let attempt = 0; ; attempt++) {
+      const reply = await call();
+      if (reply.ok || reply.error.code !== "BUSY" || attempt === 3) return reply;
+      waiting++;
+      update();
+      await pause(100 * 2 ** attempt);
+      waiting--;
+      update();
     }
-    const done = start + batch.length;
-    progress(done, selected.length);
-    if (done < selected.length)
-      await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  async function worker() {
+    while (next < selected.length) {
+      const index = next++;
+      const { card: card2 } = selected[index];
+      try {
+        await book2.importCard(card2, send);
+        summary.added++;
+      } catch (error) {
+        failures[index] = { name: card2.name, code: error.code || "INTERNAL" };
+      }
+      done++;
+      update();
+      if (next < selected.length) await pause(0);
+    }
+  }
+  update();
+  await Promise.all(
+    Array.from({ length: Math.min(3, selected.length) }, worker)
+  );
+  summary.failed = failures.filter(Boolean);
   return summary;
 }
 
 // src/Transfer.jsx
 function ImportCards({ rows, book: book2, close }) {
   const [entries, setEntries] = useState([]);
+  const [unreadable, setUnreadable] = useState(0);
   const [reading, setReading] = useState(false);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(null);
@@ -696,12 +855,18 @@ function ImportCards({ rows, book: book2, close }) {
     if (!file2) return;
     setReading(true);
     setError("");
+    setUnreadable(0);
     try {
-      const candidates = parseVcards(await file2.text());
-      setEntries(previewImport(candidates, people(rows)));
-      if (!candidates.length) setError(words.noCards);
-    } catch {
-      setError(words.unreadable);
+      if (file2.size > maxVcardBytes) {
+        setError(words.fileLimit);
+        return;
+      }
+      const parsed = parseVcardFile(await file2.text());
+      setUnreadable(parsed.unreadable);
+      setEntries(previewImport(parsed.cards, people(rows)));
+      if (!parsed.cards.length && !parsed.unreadable) setError(words.noCards);
+    } catch (error2) {
+      setError(error2 instanceof RangeError ? words.fileLimit : words.unreadable);
     } finally {
       setReading(false);
     }
@@ -714,18 +879,21 @@ function ImportCards({ rows, book: book2, close }) {
   async function save() {
     if (running.current) return;
     running.current = true;
-    setProgress([0, entries.length]);
+    setProgress({ done: 0, total: entries.length });
     setResult(
       await importSelected(
         book2,
         entries,
-        (done, total) => setProgress([done, total])
+        (done, total, waiting) => setProgress({ done, total, waiting })
       )
     );
     setProgress(null);
   }
   return <section className="transfer">
       <h2>{result2 ? words.summary : entries.length ? words.preview : words.import}</h2>
+      {unreadable > 0 && <p role="status">
+          {unreadable} {unreadable === 1 ? words.oneUnreadable : words.manyUnreadable}
+        </p>}
       {result2 ? <>
           <dl>
             {["added", "skipped", "failed"].map((key) => <div key={key}>
@@ -762,7 +930,9 @@ function ImportCards({ rows, book: book2, close }) {
                     </span>
                   </label>
                   {entry.match && <fieldset className="matchChoice" disabled={!!progress}>
-                      <legend>{words.match}</legend>
+                      <legend>
+                        {entry.matchInFile ? words.matchInFile : words.match}
+                      </legend>
                       {[false, true].map((add) => <label key={String(add)}>
                           <input
     type="radio"
@@ -777,7 +947,8 @@ function ImportCards({ rows, book: book2, close }) {
             </div>}
           {error && <p role="alert">{error}</p>}
           {progress && <p role="status">
-              {words.progress} · {progress.join(" / ")}
+              {words.progress} · {progress.done} / {progress.total}
+              {progress.waiting && " \xB7 " + words.waitingToImport}
             </p>}
           <div className="actions">
             {!!entries.length && <button className="primary" disabled={!!progress} onClick={save}>
@@ -798,6 +969,7 @@ function ExportCards({ cards, own, single, close }) {
   const available = typeof tc.file?.save === "function";
   const [copy, setCopy] = useState(!available);
   const [message, setMessage] = useState(available ? "" : words.noFileOffer);
+  const [offered, setOffered] = useState(false);
   const [pending, setPending] = useState(false);
   const field = useRef(null);
   const selected = includeMe && own ? [...cards, own] : cards;
@@ -807,8 +979,10 @@ function ExportCards({ cards, own, single, close }) {
     try {
       const name = "contacts-" + localDay(/* @__PURE__ */ new Date()) + ".vcf";
       const reply = await tc.file.save(name, output, { type: "text/vcard" });
-      if (reply.ok) setMessage(words.fileReady);
-      else if (reply.error?.code === "BUSY") setMessage(words.fileWaiting);
+      if (reply.ok) {
+        setOffered(true);
+        setMessage(words.fileReady);
+      } else if (reply.error?.code === "BUSY") setMessage(words.fileWaiting);
       else {
         setMessage(
           reply.error?.code === "TOO_LARGE" ? words.fileTooLarge : words.fileError
@@ -829,7 +1003,7 @@ function ExportCards({ cards, own, single, close }) {
           <input
     type="checkbox"
     checked={includeMe}
-    disabled={pending}
+    disabled={pending || offered}
     onChange={(e) => {
       setIncludeMe(e.target.checked);
       setMessage(available ? "" : words.noFileOffer);
@@ -858,7 +1032,7 @@ function ExportCards({ cards, own, single, close }) {
           </button> : <>
             <button
     className="primary"
-    disabled={!output || pending}
+    disabled={!output || pending || offered}
     onClick={offer}
   >
               {words.saveFile}
@@ -870,6 +1044,32 @@ function ExportCards({ cards, own, single, close }) {
         <button onClick={close}>{words.done}</button>
       </div>
     </section>;
+}
+
+// src/card-fields.js
+function formText(value) {
+  return (value ?? "").replace(/\r\n?/g, "\n");
+}
+function changedCardFields(inputs, prior = {}) {
+  const fields2 = {};
+  for (const key of Object.keys(words.fields)) {
+    if (!inputs.has(key)) continue;
+    const original = prior[key];
+    if (Array.isArray(original)) {
+      const next = [];
+      for (const [index, value] of inputs.getAll(key).entries()) {
+        if (index < original.length && value === formText(original[index]))
+          next.push(original[index]);
+        else if (value !== "") next.push(value);
+      }
+      if (next.length !== original.length || next.some((value, index) => value !== original[index]))
+        fields2[key] = next;
+    } else {
+      const value = inputs.get(key);
+      if (value !== formText(original)) fields2[key] = value;
+    }
+  }
+  return fields2;
 }
 
 // src/style.css
@@ -895,7 +1095,9 @@ function display(v) {
 function Details({ data }) {
   return Object.keys(data).length ? <dl>
       {Object.entries(data).map(([k, v]) => <div key={k}>
-          <dt>{words.fields[k] || k.replaceAll("_", " ")}</dt>
+          <dt>
+            {Object.hasOwn(words.fields, k) ? words.fields[k] : k.replaceAll("_", " ")}
+          </dt>
           <dd>{display(v)}</dd>
         </div>)}
     </dl> : <p>{words.noDetails}</p>;
@@ -904,12 +1106,20 @@ function Form({ card: card2, mode, note, onSave, cancel, busy }) {
   const entry = mode === "entry", d = card2?.value.data, prior = note?.value.data.private || {};
   function submit(e) {
     e.preventDefault();
-    const inputs = new FormData(e.currentTarget), fields2 = {};
-    for (const [k, value] of inputs)
-      if (k !== "name" && (value.trim() || !entry && d?.private[k] !== void 0))
-        fields2[k] = Array.isArray(d?.private[k]) && !entry ? value.split("\n").map((s) => s.trim()).filter(Boolean) : value.trim();
-    if (entry && note) fields2.replaces = note.key;
-    onSave(inputs.get("name"), fields2);
+    const inputs = new FormData(e.currentTarget);
+    if (entry) {
+      const fields2 = {};
+      for (const [key, value] of inputs)
+        if (value.trim()) fields2[key] = value.trim();
+      if (note) fields2.replaces = note.key;
+      onSave(null, fields2);
+      return;
+    }
+    const name = inputs.get("name");
+    onSave(
+      name === formText(d?.name) ? d?.name : name,
+      changedCardFields(inputs, d?.private)
+    );
   }
   return <form onSubmit={submit}>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
@@ -933,20 +1143,33 @@ function Form({ card: card2, mode, note, onSave, cancel, busy }) {
           </> : <>
             <label>
               {words.name}
-              <input
+              {/[\r\n]/.test(d?.name) ? <textarea
+    name="name"
+    required
+    autoFocus
+    defaultValue={d.name}
+  /> : <input
     name="name"
     required
     pattern=".*\S.*"
     autoFocus
     defaultValue={d?.name}
-  />
+  />}
             </label>
             {Object.keys(words.fields).filter(
     (k) => d?.private[k] == null || typeof d.private[k] === "string" || Array.isArray(d.private[k]) && d.private[k].every((x) => typeof x === "string")
-  ).map((k) => <label key={k}>
-                  {words.fields[k]}
-                  {Array.isArray(d?.private[k]) ? <textarea name={k} defaultValue={display(d.private[k])} /> : <input name={k} defaultValue={d?.private[k] || ""} />}
-                </label>)}
+  ).map((k) => {
+    const value = d?.private[k];
+    if (Array.isArray(value))
+      return [...value, ""].map((item, index) => <label key={k + index}>
+                      {words.fields[k]} {index + 1}
+                      <textarea name={k} defaultValue={item} />
+                    </label>);
+    return <label key={k}>
+                    {words.fields[k]}
+                    {k === "blurb" || k === "addresses" || /[\r\n]/.test(value) ? <textarea name={k} defaultValue={value ?? ""} /> : <input name={k} defaultValue={value ?? ""} />}
+                  </label>;
+  })}
           </>}
         <div className="actions">
           <button className="primary">{entry ? words.saveEntry : words.save}</button>
@@ -971,6 +1194,11 @@ function Entry({ row, correct }) {
       {correct && <button onClick={() => correct(row)}>{words.correct}</button>}
     </section>;
 }
+function mergeRows(current, changed) {
+  const rows = new Map(current.map((row) => [row.key, row]));
+  for (const row of changed) rows.set(row.key, row);
+  return [...rows.values()];
+}
 function Contacts() {
   const [rows, setRows] = useState2([]), [busy, setBusy] = useState2(true), [error, setError] = useState2(""), [key, select] = useState2(null);
   const [query, search] = useState2(""), [tab, setTab] = useState2("profile"), [mode, setMode] = useState2(""), [note, setNote] = useState2(null);
@@ -988,10 +1216,15 @@ function Contacts() {
         open(next);
         if (mode === "entry") setTab("entries");
       }
-      const fresh = await book.load();
-      setRows(fresh);
-      if (!next && !key && !window.matchMedia("(max-width:660px)").matches) {
-        select(people(fresh)[0]?.key || null);
+      if (action) {
+        const changed = book.changes();
+        setRows((current2) => mergeRows(current2, changed));
+      } else {
+        const fresh = await book.load();
+        setRows(fresh);
+        if (!key && !window.matchMedia("(max-width:660px)").matches) {
+          select(people(fresh)[0]?.key || null);
+        }
       }
     } catch (e) {
       setError(errorText(e.code));
@@ -1025,6 +1258,17 @@ function Contacts() {
   );
   const old = notes.filter((r) => !current.includes(r));
   const versions = related.filter((r) => parseKey(r.key).kind === "history").sort((a, b) => b.key.localeCompare(a.key, "en", { numeric: true }));
+  function openTab(next) {
+    if (next !== "history") {
+      setTab(next);
+      return;
+    }
+    run(async () => {
+      const history = await book.history(key);
+      setRows((current2) => mergeRows(current2, history));
+      setTab(next);
+    });
+  }
   function editEntry(row) {
     setNote(row);
     setMode("entry");
@@ -1083,6 +1327,10 @@ function Contacts() {
             {words.retry}
           </button>
         </div>}
+      {book.skipped() > 0 && <small role="status">
+          {book.skipped()}{" "}
+          {book.skipped() === 1 ? words.skippedEntry : words.skippedEntries}
+        </small>}
       {busy && <p className="busy" role="status">
           {mode || tab === "history" ? words.saving : words.loading}
         </p>}
@@ -1091,7 +1339,7 @@ function Contacts() {
     book={book}
     close={(changed) => {
       setTransfer(null);
-      if (changed) run();
+      if (changed) setRows(mergeRows(rows, book.changes()));
     }}
   /> : transfer ? <ExportCards
     cards={transfer === "one" ? [card2] : people(rows)}
@@ -1179,7 +1427,8 @@ function Contacts() {
                   {["profile", "entries", "history"].map((t) => <button
     key={t}
     aria-pressed={tab === t}
-    onClick={() => setTab(t)}
+    disabled={busy}
+    onClick={() => openTab(t)}
   >
                       {words[t]}
                     </button>)}

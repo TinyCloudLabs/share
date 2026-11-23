@@ -390,34 +390,34 @@
       },
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-contacts",
-        "tag": "v0.1.0-pre.3",
-        "commit": "a1615064f08b52abba720129103a31cc9487d22e"
+        "tag": "v0.1.0-pre.4",
+        "commit": "23484eaf53680f1660a5bf7e3d8e41b8383e7f52"
       },
       "release": {
         "version": "0.1.0",
-        "digest": "db6a416e07bd75de5e61c6cf3a3a101707167e21d00060428857f5f473a0319b"
+        "digest": "837666d9fbd2a4f6613a71af374398094077ec832dd307cf8cb15c693c78a333"
       },
       "manifest": {
         "path": "manifest.json",
         "sha256": "b527f3b30c9d7e12d17d838457a7121f0e8c3be7e710d5a6abbb93b5f1ed90b1"
       },
       "bundle": {
-        "root": "/apps/b/13ebafecabc03b8a379178d7fbadf9a259ce2372274765a4d68dd52bd4f6fd48/",
+        "root": "/apps/b/d452337d5abe2ab451c26089482b8613b8abd022e9da9ad59518b14347d58ab6/",
         "files": [
           {
             "path": "app.jsx",
-            "sha256": "81b7ba930a2eb850ff2d68fa0b78ca9ba3a507c67efb3bd57ff17b12518a1419",
-            "size": 52554
+            "sha256": "85963710a242ddef4dcceb107094b700fa07d7a3545f434f376df776cd2a3ba4",
+            "size": 60976
           },
           {
             "path": "copy.js",
-            "sha256": "903fdf78d07502e61ee4f8654a0aafefe2d0dad82e74a0fd430b574382438d3b",
-            "size": 3857
+            "sha256": "f089ba4358cb364047e6f9286001c696c52192614dfb059491cbd3fcb6f8a22e",
+            "size": 4239
           },
           {
             "path": "knowledge/index.md",
-            "sha256": "cb891500a69956b7c3b511aa3f9215111f07d8ebafa98ef52e91bf69e77c36f8",
-            "size": 10485
+            "sha256": "e47799cc1739e8ae275064647603e58d502840a47e27b8d788a5829f074c38fc",
+            "size": 10997
           },
           {
             "path": "manifest.json",
@@ -426,15 +426,15 @@
           },
           {
             "path": "release.json",
-            "sha256": "a236521db6670374ccb83d512c0f06b9354a7e84087242ca4af402a4b2c02bd0",
+            "sha256": "245a9f887966b4458b2313e08bd73d4b6262e3d84df469dcd578546a1c229a80",
             "size": 792
           }
         ],
-        "digest": "13ebafecabc03b8a379178d7fbadf9a259ce2372274765a4d68dd52bd4f6fd48"
+        "digest": "d452337d5abe2ab451c26089482b8613b8abd022e9da9ad59518b14347d58ab6"
       },
       "knowledge": {
-        "root": "/apps/b/13ebafecabc03b8a379178d7fbadf9a259ce2372274765a4d68dd52bd4f6fd48/knowledge/",
-        "digest": "4319c89357b913c43ecdb7e6bb1ed8976de1af74f5a31e4725fa507d4ea260ff"
+        "root": "/apps/b/d452337d5abe2ab451c26089482b8613b8abd022e9da9ad59518b14347d58ab6/knowledge/",
+        "digest": "1395a7046ef5effaaadc58d85114edadbab6f9c16cce075cec7f7c998236c77e"
       }
     }
   ]
