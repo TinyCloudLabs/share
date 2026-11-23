@@ -11,7 +11,7 @@ import type { CatalogEntry } from "./catalog.ts";
 import type { Manifest, PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
-import { renewalReceiptRunning } from "../share/renewal-store.js";
+import { clearRenewalReceipt, renewalReceiptRunning } from "../share/renewal-store.js";
 import { CONNECT_WINDOW_MS, withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
@@ -271,9 +271,14 @@ export function createRunPorts(): RunPorts {
       const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
       const keyPrefix = await runnerSessionPrefix(appId);
       const storage = new BrowserSessionStorage({ keyPrefix });
-      // A saved session past its signed end with a running renewal lease still counts: `activeAddress()` would drop its pointer, so the lease is looked at first.
+      // A saved session past its signed end with a running renewal lease is not the narrow reopen: it opens like a first open, with the
+      // app's full manifest and its disclosure, so a refused lease still ends in a sign-in that carries the app's own grant (and its renewal).
+      // `activeAddress()` would drop that session's pointer, so the lease candidate is looked at first.
       const saved = storage.activeAddressForRenewal();
-      if (saved !== undefined && renewalReceiptRunning(keyPrefix, saved)) return true;
+      if (saved !== undefined && renewalReceiptRunning(keyPrefix, saved)) {
+        const candidate = await storage.loadRenewalCandidate(saved);
+        if (candidate.status === "renewal-candidate") return false;
+      }
       return storage.activeAddress() !== undefined;
     },
     async prepare(entry): Promise<PreparedApp> {
@@ -322,8 +327,9 @@ export function createRunPorts(): RunPorts {
             restoreBeforeOpenKey: true,
             sessionPrefix,
             persistSession: true,
-            versionedSignIn: true,
-            renewal: true,
+            // The narrow reopen asks for no renewal: its grant is only `install.json`, and the app's own grant comes after it.
+            versionedSignIn: plan.narrow !== true,
+            renewal: plan.narrow !== true,
             expiry: RUNTIME_SESSION_MS,
           });
         } catch (error) {
@@ -373,7 +379,8 @@ export function createRunPorts(): RunPorts {
       }
       let ending: Promise<void> | undefined;
       const end: () => Promise<void> = () => {
-        ending ??= dispose();
+        // Ending the session forgets its lease too: a narrow reopen's dispose does not (it asked for no renewal), and a saved lease must not outlive a sign-out.
+        ending ??= dispose().finally(() => clearRenewalReceipt(sessionPrefix));
         return ending;
       };
       let detaching: Promise<void> | undefined;
@@ -381,6 +388,9 @@ export function createRunPorts(): RunPorts {
         detaching ??= detach();
         return detaching;
       };
+      const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
+      // The saved session's owner (the pointer is read without dropping it): whether its lease runs decides what the tab does at expiry.
+      const savedOwner = new BrowserSessionStorage({ keyPrefix: sessionPrefix }).activeAddressForRenewal();
       return {
         files,
         authorize,
@@ -388,6 +398,7 @@ export function createRunPorts(): RunPorts {
         runtime: {
           data: createAppData(kv, tinycloud.sqlForSpace(space.id)),
           expiresAt: signedIn.sessionExpiresAt - EXPIRY_MARGIN_MS,
+          renewing: savedOwner !== undefined && renewalReceiptRunning(sessionPrefix, savedOwner),
           end,
           detach: detachRuntime,
         },

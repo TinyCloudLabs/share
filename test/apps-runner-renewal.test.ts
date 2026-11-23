@@ -6,8 +6,10 @@ import * as sdk from "@tinycloud/sdk-core";
 import type { Manifest, PermissionEntry } from "@tinycloud/web-sdk";
 import type { CatalogEntry } from "../src/apps/catalog.ts";
 import { openManifest, pathCovers } from "../src/apps/grants.ts";
-import { openApp } from "../src/apps/run.ts";
+import { openApp, type RunProgress } from "../src/apps/run.ts";
 import { createRunPorts, runnerSessionPrefix } from "../src/apps/run-session.ts";
+import { mountRunner } from "../src/apps/run-view.ts";
+import type { RenderJsxOptions } from "../src/viewer/jsx-render.js";
 import { LIBRARY_SESSION_PREFIX, savedLibraryAccount } from "../src/share/library-session.js";
 import { SHARE_MANIFEST_SCOPE, shareManifest, signInWithManifest } from "../src/share/openkey-session.js";
 import { loadRenewalReceipt, saveRenewalReceipt } from "../src/share/renewal-store.js";
@@ -68,6 +70,7 @@ const files = new Map<string, string>();
 const authorizations: Array<{ siwe: string; renewal?: unknown }> = [];
 const connections = vi.fn();
 const ordinaryRestores = vi.fn();
+const versionedSignIns = vi.fn();
 const legacyApprovals = vi.fn();
 const restoredLeases = vi.fn();
 const reusedGrants = vi.fn();
@@ -98,6 +101,15 @@ function siwe(address: string, expiresAt: number, permissions: PermissionEntry[]
 }
 
 vi.mock("../src/email-share/config.js", () => ({ loadSharePublicConfig: async () => CONFIG }));
+
+vi.mock("../src/viewer/jsx-render.js", () => ({
+  renderJsxPage: async (container: HTMLElement, _source: Uint8Array, options: RenderJsxOptions) => {
+    const frame = document.createElement("iframe");
+    container.append(frame);
+    options.onCleanup?.(() => frame.remove());
+    options.onState?.("running");
+  },
+}));
 
 vi.mock("@openkey/sdk", () => ({
   OpenKey: class {
@@ -148,6 +160,11 @@ vi.mock("@tinycloud/web-sdk", () => {
       localStorage.removeItem(activeKey(this.options.keyPrefix));
       return undefined;
     }
+    async loadRenewalCandidate(address: string) {
+      const grant = saved.get(this.options.keyPrefix);
+      if (grant === undefined || grant.address !== address) return { status: "missing", data: null };
+      return { status: grant.expiresAt <= Date.now() ? "renewal-candidate" : "loaded", data: grant };
+    }
     async saveRuntimeGrants() {}
   }
 
@@ -162,7 +179,9 @@ vi.mock("@tinycloud/web-sdk", () => {
       spaceId = "applications";
       account = { spaces: { get: async () => ({ ok: true }) } };
 
-      constructor(readonly config: ClientConfig) {}
+      constructor(readonly config: ClientConfig) {
+        versionedSignIns(config.openkey !== undefined);
+      }
       get prefix() { return this.config.sessionStorageKeyPrefix; }
       connectWallet() {}
       cleanup() {}
@@ -290,8 +309,8 @@ function seedSession(prefix: string, manifest: Manifest, receipt = true, address
   if (receipt) saveRenewalReceipt(prefix, OWNER.address, lease(prefix, OWNER.address));
 }
 
-const open = (entry = firstVersion.entry, entries = [entry]) =>
-  openApp(entry.app_id, { ...createRunPorts(), catalog: entries }, () => undefined);
+const open = (entry = firstVersion.entry, entries = [entry], report: (progress: RunProgress) => void = () => undefined) =>
+  openApp(entry.app_id, { ...createRunPorts(), catalog: entries }, report);
 
 beforeEach(() => {
   vi.setSystemTime(NOW);
@@ -341,7 +360,7 @@ describe("runner renewal", () => {
     const prefix = await runnerSessionPrefix(APP_ID);
     seedSession(prefix, openManifest(firstVersion.manifest));
     vi.setSystemTime(SIGNED_END + 1);
-    expect(await createRunPorts().hasPersistedSession?.(APP_ID)).toBe(true);
+    expect(await createRunPorts().hasPersistedSession?.(APP_ID)).toBe(false);
     expect(localStorage.getItem(activeKey(prefix))).toBe(OWNER.address);
     await open();
     expect(localStorage.getItem(activeKey(prefix))).toBe(OWNER.address);
@@ -382,19 +401,35 @@ describe("runner renewal", () => {
     expect(connections).not.toHaveBeenCalled();
   });
 
-  it("tries the lease before falling back to fresh approval after the node refuses it", async () => {
+  it("discloses the full app grant before fresh approval when the node refuses the lease", async () => {
     const prefix = await runnerSessionPrefix(APP_ID);
     seedSession(prefix, openManifest(firstVersion.manifest));
     renewalStopped = true;
     chooseRenewal = false;
     vi.setSystemTime(SIGNED_END + 1);
+    const disclose = vi.fn();
 
-    await open();
+    const { session } = await open(firstVersion.entry, [firstVersion.entry], (progress) => {
+      if (progress.phase === "disclosing") disclose(progress.manifest);
+    });
 
     expect(restoredLeases).toHaveBeenCalledTimes(1);
     expect(ordinaryRestores).not.toHaveBeenCalled();
     expect(connections).toHaveBeenCalledTimes(1);
-    expect(restoredLeases.mock.invocationCallOrder[0]).toBeLessThan(connections.mock.invocationCallOrder[0]!);
+    const connection = connections.mock.invocationCallOrder[0]!;
+    expect(disclose).toHaveBeenCalledWith(firstVersion.manifest);
+    expect(disclose.mock.invocationCallOrder[0]).toBeLessThan(connection);
+    expect(restoredLeases.mock.invocationCallOrder[0]).toBeLessThan(connection);
+    expect(authorizations).toHaveLength(1);
+    const request = authorizations[0]!;
+    expect(request.renewal).toEqual({ version: 1, leaseLifetimeSeconds: 90 * 86_400, purpose: "standing" });
+    expect(sdk.extractRecapAttenuations(request.siwe)).toMatchObject({
+      [`tinycloud:applications/kv/${APP_ID}/app/`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/list": [{}], "tinycloud.kv/put": [{}] },
+      [`tinycloud:applications/kv/${APP_ID}/records/`]: { "tinycloud.kv/get": [{}], "tinycloud.kv/put": [{}] },
+      [`tinycloud:applications/kv/${APP_ID}/knowledge/`]: { "tinycloud.kv/put": [{}] },
+    });
+    expect(stepUps).not.toHaveBeenCalled();
+    expect(await session.data.kvGet(RECORD)).toMatchObject({ ok: true });
     expect(loadRenewalReceipt(prefix, OWNER.address)).toBeNull();
   });
 
@@ -466,9 +501,18 @@ describe("runner renewal", () => {
     expect(stepUps).not.toHaveBeenCalled();
   });
 
-  it("clears the receipt and saved session when signing out of the app", async () => {
+  it("keeps the receipt on a narrow reopen and detach, then clears it on explicit sign-out", async () => {
     const prefix = await runnerSessionPrefix(APP_ID);
     seedSession(prefix, openManifest(firstVersion.manifest));
+
+    const { session } = await open();
+    expect(ordinaryRestores).toHaveBeenCalledTimes(1);
+    expect(versionedSignIns).toHaveBeenCalledExactlyOnceWith(false);
+    expect(connections).not.toHaveBeenCalled();
+    expect(authorizations).toEqual([]);
+    await session.detach();
+    expect(localStorage.getItem(activeKey(prefix))).toBe(OWNER.address);
+    expect(loadRenewalReceipt(prefix, OWNER.address)).toEqual(lease(prefix, OWNER.address));
 
     await (await open()).session.end();
 
@@ -528,6 +572,66 @@ describe("runner renewal", () => {
     expect(restoredLeases).toHaveBeenCalledTimes(1);
     expect(connections).toHaveBeenCalledTimes(1);
     expect(loadRenewalReceipt(prefix, OWNER.address)).toBeNull();
+  });
+});
+
+describe("runner view expiry", () => {
+  it.each([
+    { renewing: true, title: "Your session ended", copy: "Reopen the app to carry on." },
+    { renewing: false, title: "Your session expired", copy: "Your session expired: open the app again." },
+  ])("shows $title and uses the session's expiry behavior", async ({ renewing, title, copy }) => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ now: SIGNED_END - 65_000, toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+    const prefix = await runnerSessionPrefix(APP_ID);
+    seedSession(prefix, openManifest(firstVersion.manifest), renewing);
+    const ports = createRunPorts();
+    const end = vi.fn();
+    const detach = vi.fn();
+    const root = document.body.appendChild(document.createElement("div"));
+    const runner = mountRunner(root, {
+      appId: APP_ID,
+      ports: {
+        ...ports,
+        catalog: [firstVersion.entry],
+        async signIn(...args) {
+          const session = await ports.signIn(...args);
+          return {
+            ...session,
+            runtime: {
+              ...session.runtime,
+              end: async () => { end(); await session.runtime.end(); },
+              detach: async () => { detach(); await session.runtime.detach(); },
+            },
+          };
+        },
+      },
+    });
+    try {
+      await vi.waitFor(() => expect(root.querySelector("iframe")).not.toBeNull());
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(root.querySelector("iframe")).toBeNull();
+      expect(root.querySelector(".run-screen__title")?.textContent).toBe(title);
+      expect(root.textContent).toContain(copy);
+      expect(end).toHaveBeenCalledTimes(renewing ? 0 : 1);
+      expect(detach).toHaveBeenCalledTimes(renewing ? 1 : 0);
+      expect(localStorage.getItem(activeKey(prefix))).toBe(renewing ? OWNER.address : null);
+      expect(loadRenewalReceipt(prefix, OWNER.address)).toEqual(renewing ? lease(prefix, OWNER.address) : null);
+      if (!renewing) return;
+
+      vi.setSystemTime(SIGNED_END + 1);
+      const reopen = [...root.querySelectorAll("button")].find((button) => button.textContent === "Open Test app again");
+      expect(reopen).toBeDefined();
+      reopen!.click();
+
+      await vi.waitFor(() => expect(root.querySelector("iframe")).not.toBeNull());
+      expect(restoredLeases).toHaveBeenCalledTimes(1);
+      expect(connections).not.toHaveBeenCalled();
+      expect(authorizations).toEqual([]);
+    } finally {
+      runner.destroy();
+      root.remove();
+    }
   });
 });
 

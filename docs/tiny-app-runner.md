@@ -23,7 +23,7 @@ The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open
    "Your session expired" (with Open again), and the usual OpenKey outcomes (cancelled, no
    answer in time, another request waiting, wrong account).
 
-The session lasts one hour. At its end the frame is removed and the page says so. "Sign out of
+The session lasts one hour, or until its lease ends when the owner left automatic renewal on (90 days at most). At its end the frame is removed and the page says so; with a lease the saved session and lease are kept, and opening the app again restores through them with no approval. "Sign out of
 this app" ends it earlier. The app-scoped session and any signed runtime grants for the selected
 app version are stored in browser storage; the SDK validates them on restore. App files and notes
 remain in TinyCloud.
