@@ -34,6 +34,14 @@ export const words = {
   includeMe: 'Include my card',
   exportNotice:
     'The export file is not protected. Anyone who has it can read it.',
+  saveFile: 'Save file',
+  copyInstead: 'Copy the text instead',
+  fileReady:
+    'The file is ready. Look for the Save button in the bar above the app.',
+  fileWaiting: 'Finish the file waiting above first.',
+  noFileOffer: 'This version of Share can only export by copying text.',
+  fileError: 'Share could not offer this file.',
+  fileTooLarge: 'This file is too large for Share to offer.',
   exportHelp:
     'Select the text, copy it, and save it as contacts.vcf in a plain text editor.',
   selectText: 'Select all text',

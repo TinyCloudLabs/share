@@ -390,29 +390,29 @@
       },
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-contacts",
-        "tag": "v0.1.0-pre.2",
-        "commit": "ad43e199a5a08f60524ae0a4f4a7968299e7d51d"
+        "tag": "v0.1.0-pre.3",
+        "commit": "a1615064f08b52abba720129103a31cc9487d22e"
       },
       "release": {
         "version": "0.1.0",
-        "digest": "12a1e4c1b13cf05bb96c505c42d26cb2e68e4ba3442968e5a73a4ba7f1b152e1"
+        "digest": "db6a416e07bd75de5e61c6cf3a3a101707167e21d00060428857f5f473a0319b"
       },
       "manifest": {
         "path": "manifest.json",
         "sha256": "b527f3b30c9d7e12d17d838457a7121f0e8c3be7e710d5a6abbb93b5f1ed90b1"
       },
       "bundle": {
-        "root": "/apps/b/0ac5989954477202c0daca0a3d3803530e51cf5272b3ad7adb7dd5b92f285fce/",
+        "root": "/apps/b/13ebafecabc03b8a379178d7fbadf9a259ce2372274765a4d68dd52bd4f6fd48/",
         "files": [
           {
             "path": "app.jsx",
-            "sha256": "b4a6a060d6d80afdd2482e5b5740ed86fec084870d84a9bc06c5284927fb8c77",
-            "size": 50764
+            "sha256": "81b7ba930a2eb850ff2d68fa0b78ca9ba3a507c67efb3bd57ff17b12518a1419",
+            "size": 52554
           },
           {
             "path": "copy.js",
-            "sha256": "f9e532121bcff6186110f95be5655332c753ef29ecd99451b8390f0edb83d291",
-            "size": 3463
+            "sha256": "903fdf78d07502e61ee4f8654a0aafefe2d0dad82e74a0fd430b574382438d3b",
+            "size": 3857
           },
           {
             "path": "knowledge/index.md",
@@ -426,14 +426,14 @@
           },
           {
             "path": "release.json",
-            "sha256": "fbb263e55beece4d5661f798ffbd1c7fb68df39bc0026455395a7fd5f7b11818",
+            "sha256": "a236521db6670374ccb83d512c0f06b9354a7e84087242ca4af402a4b2c02bd0",
             "size": 792
           }
         ],
-        "digest": "0ac5989954477202c0daca0a3d3803530e51cf5272b3ad7adb7dd5b92f285fce"
+        "digest": "13ebafecabc03b8a379178d7fbadf9a259ce2372274765a4d68dd52bd4f6fd48"
       },
       "knowledge": {
-        "root": "/apps/b/0ac5989954477202c0daca0a3d3803530e51cf5272b3ad7adb7dd5b92f285fce/knowledge/",
+        "root": "/apps/b/13ebafecabc03b8a379178d7fbadf9a259ce2372274765a4d68dd52bd4f6fd48/knowledge/",
         "digest": "4319c89357b913c43ecdb7e6bb1ed8976de1af74f5a31e4725fa507d4ea260ff"
       }
     }

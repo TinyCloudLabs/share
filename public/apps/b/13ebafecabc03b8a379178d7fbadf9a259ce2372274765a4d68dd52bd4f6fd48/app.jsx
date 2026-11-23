@@ -227,6 +227,13 @@ var words = {
   done: "Done",
   includeMe: "Include my card",
   exportNotice: "The export file is not protected. Anyone who has it can read it.",
+  saveFile: "Save file",
+  copyInstead: "Copy the text instead",
+  fileReady: "The file is ready. Look for the Save button in the bar above the app.",
+  fileWaiting: "Finish the file waiting above first.",
+  noFileOffer: "This version of Share can only export by copying text.",
+  fileError: "Share could not offer this file.",
+  fileTooLarge: "This file is too large for Share to offer.",
   exportHelp: "Select the text, copy it, and save it as contacts.vcf in a plain text editor.",
   selectText: "Select all text",
   vcardText: "vCard text",
@@ -440,6 +447,7 @@ function contacts(kv2) {
 
 // src/Transfer.jsx
 import React, { useRef, useState } from "react";
+import * as tc from "@tinycloud/app";
 
 // contract/vcard.js
 var fields = new Map(
@@ -684,12 +692,12 @@ function ImportCards({ rows, book: book2, close }) {
   const [progress, setProgress] = useState(null);
   const [result2, setResult] = useState(null);
   const running = useRef(false);
-  async function read(file) {
-    if (!file) return;
+  async function read(file2) {
+    if (!file2) return;
     setReading(true);
     setError("");
     try {
-      const candidates = parseVcards(await file.text());
+      const candidates = parseVcards(await file2.text());
       setEntries(previewImport(candidates, people(rows)));
       if (!candidates.length) setError(words.noCards);
     } catch {
@@ -787,9 +795,33 @@ function ImportCards({ rows, book: book2, close }) {
 }
 function ExportCards({ cards, own, single, close }) {
   const [includeMe, setIncludeMe] = useState(false);
+  const available = typeof tc.file?.save === "function";
+  const [copy, setCopy] = useState(!available);
+  const [message, setMessage] = useState(available ? "" : words.noFileOffer);
+  const [pending, setPending] = useState(false);
   const field = useRef(null);
   const selected = includeMe && own ? [...cards, own] : cards;
   const output = selected.map((row) => serializeVcard(row.value.data)).join("");
+  async function offer() {
+    setPending(true);
+    try {
+      const name = "contacts-" + localDay(/* @__PURE__ */ new Date()) + ".vcf";
+      const reply = await tc.file.save(name, output, { type: "text/vcard" });
+      if (reply.ok) setMessage(words.fileReady);
+      else if (reply.error?.code === "BUSY") setMessage(words.fileWaiting);
+      else {
+        setMessage(
+          reply.error?.code === "TOO_LARGE" ? words.fileTooLarge : words.fileError
+        );
+        setCopy(true);
+      }
+    } catch {
+      setMessage(words.fileError);
+      setCopy(true);
+    } finally {
+      setPending(false);
+    }
+  }
   return <section className="transfer">
       <h2>{single ? words.exportOne : words.exportAll}</h2>
       <p>{words.exportNotice}</p>
@@ -797,17 +829,24 @@ function ExportCards({ cards, own, single, close }) {
           <input
     type="checkbox"
     checked={includeMe}
-    onChange={(e) => setIncludeMe(e.target.checked)}
+    disabled={pending}
+    onChange={(e) => {
+      setIncludeMe(e.target.checked);
+      setMessage(available ? "" : words.noFileOffer);
+    }}
   />
           {words.includeMe}
         </label>}
-      <p>{words.exportHelp}</p>
-      <label>
-        {words.vcardText}
-        <textarea ref={field} readOnly value={output} rows={6} />
-      </label>
+      {message && <p role="status">{message}</p>}
+      {copy && <>
+          <p>{words.exportHelp}</p>
+          <label>
+            {words.vcardText}
+            <textarea ref={field} readOnly value={output} rows={6} />
+          </label>
+        </>}
       <div className="actions">
-        <button
+        {copy ? <button
     className="primary"
     disabled={!output}
     onClick={() => {
@@ -815,8 +854,19 @@ function ExportCards({ cards, own, single, close }) {
       field.current.select();
     }}
   >
-          {words.selectText}
-        </button>
+            {words.selectText}
+          </button> : <>
+            <button
+    className="primary"
+    disabled={!output || pending}
+    onClick={offer}
+  >
+              {words.saveFile}
+            </button>
+            <button disabled={pending} onClick={() => setCopy(true)}>
+              {words.copyInstead}
+            </button>
+          </>}
         <button onClick={close}>{words.done}</button>
       </div>
     </section>;
