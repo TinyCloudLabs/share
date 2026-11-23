@@ -149,6 +149,12 @@ only for the same record key, owner and space.
 Share chooses the encryption key from the installed manifest and keeps its key material
 outside the app. The saved manifest and the approved session must both allow the same key.
 The app can encrypt up to 256 KiB of UTF-8 JSON and open an encrypted string up to 384 KiB.
+The seal request and reply allow up to 16 levels of nested data, including the message fields.
+
+Sealing keeps the value confidential and binds it to its record. Use separate evidence to
+verify who wrote it. Anyone who can encrypt to the key and write that record can make a
+sealed value for it. A reader outside the runner must calculate the expected owner, space and
+record context independently and verify the matching header inside the decrypted value.
 
 ### Saving a file: `file.save`
 

@@ -29,7 +29,7 @@
  *
  * Nothing here throws into the frame: every path resolves to a result.
  */
-import { CAP_ID_PATTERN, CAP_LIMITS, CAP_OPS, CAP_TYPE_PREFIX, CAP_MAX_ERROR_CHARS, capError, type CapError, type CapErrorCode, type CapOp, type CapResult } from "../artifact/jsx-runtime/cap-protocol.js";
+import { CAP_ID_PATTERN, CAP_LIMITS, CAP_OPS, CAP_SEAL_MAX_DEPTH, CAP_TYPE_PREFIX, CAP_MAX_ERROR_CHARS, capError, type CapError, type CapErrorCode, type CapOp, type CapResult } from "../artifact/jsx-runtime/cap-protocol.js";
 import type { Authorizer, BridgeAction } from "./grants.ts";
 import type { NamedKeyEnvelope } from "@tinycloud/node-sdk/encryption-keys";
 import type { BoundSeal } from "./seal.ts";
@@ -175,6 +175,16 @@ function mapError(error: { readonly code?: string | undefined; readonly message?
   return fail("INTERNAL", "The request failed.");
 }
 
+/** SDK error codes travel through the fixed bridge messages. SDK text stays in the host. */
+function sealFailure(error: unknown): CapError {
+  if (typeof error === "object" && error !== null) {
+    const code = Reflect.get(error, "code");
+    if (code === "INVALID_ENVELOPE") return fail("BAD_REQUEST", "The encrypted value could not be read.");
+    if (typeof code === "string") return mapError({ code });
+  }
+  return fail("INTERNAL", "The call failed.");
+}
+
 export const MAX_SEAL_JSON_BYTES = 256 * 1024;
 export const MAX_SEAL_ENVELOPE_BYTES = 384 * 1024;
 export const MAX_SEAL_CONTEXT_CHARS = 512;
@@ -304,8 +314,13 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       }
       if (utf8Length(json) > MAX_SEAL_JSON_BYTES) return fail("TOO_LARGE", "The value is too large to encrypt.");
       return { run: async () => {
-        // The context is also inside the encrypted payload and is checked before returning the value.
-        const envelope = await seal.encrypt(new TextEncoder().encode(`${header}\n${json}`), aad);
+        let envelope: NamedKeyEnvelope;
+        try {
+          // Verify the context from inside the encrypted payload before returning any value.
+          envelope = await seal.encrypt(new TextEncoder().encode(`${header}\n${json}`), aad);
+        } catch (error) {
+          return sealFailure(error);
+        }
         if (envelope.v !== 2 || envelope.keyPath !== seal.keyPath || envelope.networkId !== seal.networkId || envelope.aad !== expected) {
           return fail("INTERNAL", "The value could not be encrypted.");
         }
@@ -335,12 +350,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       try {
         bytes = await seal.decrypt(named);
       } catch (error) {
-        if (isPlainObject(error) || error instanceof Error) {
-          const code = Reflect.get(error, "code");
-          if (code === "INVALID_ENVELOPE") return fail("BAD_REQUEST", "The encrypted value could not be read.");
-          if (typeof code === "string") return mapError({ code });
-        }
-        return fail("INTERNAL", "The encrypted value could not be opened.");
+        return sealFailure(error);
       }
       if (bytes.byteLength > MAX_SEAL_JSON_BYTES + aad.byteLength + 1) return fail("TOO_LARGE", "The encrypted value is too large to open.");
       try {
@@ -367,7 +377,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
     try { options.reply(id, result); } catch { /* the frame is gone */ }
   }
 
-  function start(id: string, prepared: Prepared): void {
+  function start(id: string, prepared: Prepared, maxDepth: number): void {
     held.add(id);
     let replied = false;
     let released = false;
@@ -376,7 +386,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       replied = true;
       clearTimeout(soft);
       // A result that would not fit in a message is refused here, not truncated.
-      const size = dataSize(result, limits.maxMessageBytes);
+      const size = dataSize(result, limits.maxMessageBytes, maxDepth);
       safeReply(id, size === null ? fail("INTERNAL", "The answer could not be sent.") : size > limits.maxMessageBytes ? fail("TOO_LARGE", `The answer is larger than ${limits.maxMessageBytes} bytes: ask for less (for SQL, use LIMIT).`) : result);
     };
     const release = (): void => {
@@ -408,7 +418,9 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
         if (!OPS.includes(op)) { safeReply(id, fail("BAD_REQUEST", "Unknown call.")); return; }
         const args = body["args"];
         if (!isPlainObject(args)) { safeReply(id, fail("BAD_REQUEST", "The call's arguments must be a plain object.")); return; }
-        const size = dataSize(args, limits.maxMessageBytes);
+        const sealing = op === "seal.encrypt" || op === "seal.decrypt";
+        const maxDepth = sealing ? CAP_SEAL_MAX_DEPTH : CAP_LIMITS.maxDepth;
+        const size = dataSize(args, limits.maxMessageBytes, maxDepth);
         if (size === null) { safeReply(id, fail("BAD_REQUEST", "The call's arguments must be plain data.")); return; }
         if (size > limits.maxMessageBytes) { safeReply(id, fail("TOO_LARGE", `The call is larger than ${limits.maxMessageBytes} bytes.`)); return; }
         if (options.isLive?.() === false) { safeReply(id, fail("NOT_CONNECTED", "Your session expired: open the app again.")); return; }
@@ -419,7 +431,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
           : op === "seal.encrypt" || op === "seal.decrypt" ? prepareSeal(op, args)
           : op.startsWith("kv.") ? prepareKv(op as Extract<CapOp, `kv.${string}`>, args)
           : prepareSql(op as "sql.query" | "sql.execute", args);
-        if ("run" in prepared) start(id, prepared); else safeReply(id, prepared);
+        if ("run" in prepared) start(id, prepared, maxDepth); else safeReply(id, prepared);
       } catch {
         if (id !== undefined) safeReply(id, fail("INTERNAL", "The call failed."));
       }

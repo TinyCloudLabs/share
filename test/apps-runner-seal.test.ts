@@ -12,6 +12,7 @@ import { signInPlan } from "../src/apps/run.ts";
 import { bindSeal, type BoundSeal } from "../src/apps/seal.ts";
 import { runnerSealingKey } from "../src/apps/seal-key.ts";
 import type { CapOp, CapResult } from "../src/artifact/jsx-runtime/cap-protocol.ts";
+import { JSX_BRIDGE_RUNTIME_SCRIPT } from "../src/viewer/jsx-frame.ts";
 import { assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 
 const appId = "xyz.tinycloud.tinyapps.contacts";
@@ -245,4 +246,68 @@ describe("sealing context", () => {
     expect(seal.encrypt).not.toHaveBeenCalled();
     expect(seal.decrypt).not.toHaveBeenCalled();
   });
+});
+
+it("scrubs SDK error details for both seal operations", async () => {
+  const { seal } = sealFixture();
+  const call = harness(seal);
+  const encrypted = await call("seal.encrypt", { value: true, context });
+  if (!encrypted.ok) throw new Error("encrypt failed");
+  const error = Object.assign(new Error("secret plaintext and owner details"), { code: "FORBIDDEN" });
+  vi.mocked(seal.encrypt).mockRejectedValueOnce(error);
+  vi.mocked(seal.decrypt).mockRejectedValueOnce({ code: "FORBIDDEN", message: error.message });
+  const expected = { ok: false, error: { code: "PERMISSION_DENIED", message: "This app's permissions don't allow that." } };
+  expect(await call("seal.encrypt", { value: true, context })).toEqual(expected);
+  expect(await call("seal.decrypt", { sealed: encrypted.sealed, context })).toEqual(expected);
+});
+
+it("forwards and opens a history record with an imported nested address", async () => {
+  const { seal: bound } = sealFixture();
+  const call = harness(bound);
+  const value = {
+    prior: {
+      v: 1, at: "2026-11-23", by: "owner",
+      data: {
+        name: "Thistle Tern", added: "2026-11-23",
+        private: { addresses: [{ label: "Studio", lines: ["12 Fable Walk", "Sedge"] }] },
+      },
+    },
+  };
+  const historyKey = `${appId}/history/2026-11/2026-11-23T1200-thistle-tern-0123abcd`;
+  const nonce = "a".repeat(32);
+  let receive: (event: { source: unknown; origin?: string; data: unknown }) => void;
+  const parent = { postMessage: vi.fn() };
+  const child = { postMessage: vi.fn() };
+  const frame = { contentWindow: child, setAttribute: vi.fn(), addEventListener: vi.fn() };
+  const relayWindow = {
+    location: { hash: "#" + nonce, pathname: "/", search: "" },
+    parent,
+    addEventListener: (_type: string, listener: typeof receive) => { receive = listener; },
+  };
+  const relayDocument = {
+    getElementById: () => null,
+    createElement: () => frame,
+    body: { replaceChildren: vi.fn() },
+  };
+  new Function("window", "self", "document", JSX_BRIDGE_RUNTIME_SCRIPT)(relayWindow, { origin: "null" }, relayDocument);
+  receive!({ source: parent, data: { v: 1, type: "render", nonce, kind: "jsx", source: "", modules: { runtime: "" }, theme: "system" } });
+
+  async function roundTrip(id: string, op: CapOp, args: Record<string, unknown>) {
+    receive({ source: child, origin: "null", data: { v: 1, type: `cap/${op}`, id, args } });
+    expect(parent.postMessage).toHaveBeenLastCalledWith({ v: 1, nonce, type: `cap/${op}`, body: { id, args } }, "*");
+    const result = await call(op, args);
+    receive({ source: parent, data: { v: 1, nonce, type: "cap/result", id, result } });
+    expect(child.postMessage).toHaveBeenLastCalledWith({ v: 1, type: "cap/result", id, result }, "*");
+    return result;
+  }
+
+  const encrypted = await roundTrip("10", "seal.encrypt", { value, context: historyKey });
+  expect(encrypted).toMatchObject({ ok: true, sealed: expect.any(String) });
+  if (!encrypted.ok) return;
+  expect(await roundTrip("11", "seal.decrypt", { sealed: encrypted.sealed, context: historyKey })).toEqual({ ok: true, value });
+
+  receive!({ source: child, origin: "null", data: { v: 1, type: "cap/kv.put", id: "12", args: { key: "k", body: value } } });
+  expect(child.postMessage).toHaveBeenLastCalledWith({ v: 1, type: "cap/result", id: "12", result: {
+    ok: false, error: { code: "BAD_REQUEST", message: expect.any(String) },
+  } }, "*");
 });

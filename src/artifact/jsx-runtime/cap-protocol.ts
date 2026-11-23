@@ -41,6 +41,9 @@ export const CAP_LIMITS = Object.freeze({
   maxParams: 256,
 });
 
+/** A sealed history record can contain an entire earlier record. */
+export const CAP_SEAL_MAX_DEPTH = 16;
+
 export const CAP_ERROR_CODES = [
   "PERMISSION_DENIED",
   "NOT_FOUND",

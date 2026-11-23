@@ -99,7 +99,8 @@ The kit's descriptive `resources.*` blocks grant nothing in the SDK, so they are
 
 An app that encrypts its data declares one exact key set aside for that app. The catalog and
 runner show this permission before sign-in. Share includes it with the app's other permissions
-and lets the app encrypt and open data with that key. See [encrypting app data](tiny-app-runner.md#encrypting-app-data)
+and lets the app encrypt and open data with that key. The seal keeps data confidential and ties
+it to its record. Author checks use separate evidence. See [encrypting app data](tiny-app-runner.md#encrypting-app-data)
 for the manifest fields and bridge calls.
 
 `npm run test:e2e:apps-page` builds the site and checks the page and the details sheets in Chromium
