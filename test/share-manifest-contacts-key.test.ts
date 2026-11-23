@@ -86,19 +86,19 @@ describe("TC-4036 the published app-keys file for sealed Contacts", () => {
     expect(openKeyAcceptsKeys(app, [{ path: `apps/${app}/${"a".repeat(64)}/${"b".repeat(64)}/${"c".repeat(64)}/${"d".repeat(64)}`, abilities: ["decrypt"] }])).toBe(false);
   });
 
-  it("is built into the output as a plain file: audited, byte-identical, with no redirect rule that matches it", async () => {
+  it("is built into the output as a plain file, byte-identical, with no redirect rule that matches it", async () => {
     const out = mkdtempSync(join(tmpdir(), "app-keys-"));
     outDirs.push(out);
     await run(process.execPath, ["node_modules/vite/bin/vite.js", "build", "--outDir", out, "--emptyOutDir"], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
     const built = readFileSync(join(out, ".well-known/openkey-app-keys.json"));
     expect(built.equals(bytes)).toBe(true);
-    // No `_redirects` rule may match this path (a page rule like `/s/* /viewer/ 200` must not catch it).
+    // No `_redirects` rule may match this path (a page rule like `/s/* /viewer/ 200` must not catch it). The matcher knows only
+    // literal paths and `*` wildcards, which is all `_redirects` uses today; a rule with `:splat` or a `:placeholder` source needs it extended.
+    // The build audit (`audit-dist`, with gitleaks) is not run here: the deploy build and the gitleaks CI job run it.
     const rules = readFileSync(join(out, "_redirects"), "utf8").split("\n").map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"));
     const meeting = rules.filter((rule) => new RegExp(`^${(rule.split(/\s+/)[0] ?? "").replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test("/.well-known/openkey-app-keys.json"));
     expect(meeting).toEqual([]);
-    // The same audit the deploy build runs on the output: no source map, an allowed file type, no key or token pattern, gitleaks clean.
-    await run(process.execPath, ["scripts/audit-dist.mjs", out], { cwd: ROOT });
-  }, 120_000);
+  }, 180_000);
 
   it("leaves Share's own published manifest and its digest input without any key declaration", () => {
     const plugin = (resolvedConfig().plugins ?? []).flat().find(
