@@ -19,6 +19,7 @@
  *   kv.del(key)                      -> { ok }
  *   sql.query(db, text, params = []) -> { ok, columns, rows, rowCount }     one read-only statement
  *   sql.execute(db, text, params=[]) -> { ok, changes, lastInsertRowId }   one write or schema statement
+ *   file.save(name, body, opts?)     -> { ok }       offers the owner a file to save; opts: { type? }; see below
  */
 import { CAP_LIMITS, CAP_RESULT_TYPE, capError, type CapOp, type CapResult } from "./cap-protocol.js";
 
@@ -121,4 +122,23 @@ export const kv = Object.freeze({
 export const sql = Object.freeze({
   query: (db: unknown, text: unknown, params: unknown = []): Promise<CapResult> => sqlArgs("sql.query", db, text, params),
   execute: (db: unknown, text: unknown, params: unknown = []): Promise<CapResult> => sqlArgs("sql.execute", db, text, params),
+});
+
+/**
+ * `file.save(name, body, opts?)` offers the owner a file to save; it writes nothing itself. The runner shows the offer in
+ * its own bar and only the owner's click on Save there starts the save. `{ ok: true }` means "offered", never "saved":
+ * a browser does not tell the page whether a download was kept. `body`: string | Uint8Array, up to the call limit (1 MB).
+ * `opts.type` is one of text/plain, text/csv, text/vcard, text/markdown, application/json; it is taken from the name's
+ * extension (.txt, .csv, .vcf, .md, .json) when left out. One offer waits at a time: a second call answers BUSY until the
+ * owner saves or dismisses the first.
+ */
+export const file = Object.freeze({
+  save: (name: unknown, body: unknown, options?: unknown): Promise<CapResult> => {
+    if (!isText(name)) return bad("The file name must be a string.");
+    if (!isText(body) && !(body instanceof Uint8Array)) return bad("body must be a string or Uint8Array.");
+    if (options !== undefined && options !== null && (typeof options !== "object" || Array.isArray(options))) return bad("opts must be { type?: string }.");
+    const type: unknown = options === undefined || options === null ? undefined : (options as { type?: unknown }).type;
+    if (type !== undefined && !isText(type)) return bad("The type must be a string.");
+    return send("file.save", type === undefined ? { name, body } : { name, body, type });
+  },
 });

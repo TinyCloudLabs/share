@@ -12,7 +12,7 @@
  */
 
 /** The operations v1 knows. Anything else under `cap/` is dropped by the bridge. */
-export const CAP_OPS = ["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute"] as const;
+export const CAP_OPS = ["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute", "file.save"] as const;
 export type CapOp = (typeof CAP_OPS)[number];
 
 export const CAP_TYPE_PREFIX = "cap/";
