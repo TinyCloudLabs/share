@@ -26,6 +26,8 @@ export type PutResult = "created" | "exists";
 export interface SignInPlan {
   readonly manifest: Manifest;
   readonly scope: ManifestScope;
+  /** True for the narrow plan that only reads `install.json`: its sign-in asks for no renewal, as the app's own grant is not in it. */
+  readonly narrow?: true;
 }
 
 /** The runtime session: the app's data, and when it may no longer be used. */
@@ -33,6 +35,8 @@ export interface RuntimeSession {
   readonly data: AppData;
   /** Epoch ms after which the session may no longer be used (the signed session's own expiry, less a margin). */
   readonly expiresAt: number;
+  /** True while a renewal lease runs for this session: its end is not the owner's last word, so a tab that reaches it detaches and keeps the lease. */
+  readonly renewing?: boolean;
   /** Ends the session and OpenKey's sign-in, clearing the saved session. Safe to call twice. */
   end(): Promise<void>;
   /**
@@ -96,6 +100,7 @@ export function installRecordPlan(entry: CatalogEntry): SignInPlan {
       allowedActions: ["get"],
       allowedPathPrefixes: [{ space: "applications", prefix: key }],
     },
+    narrow: true,
   };
 }
 

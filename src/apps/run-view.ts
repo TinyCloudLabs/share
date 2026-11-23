@@ -190,13 +190,16 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     offers.clear();
   };
 
-  /** Stops the app and ends its session for good: only sign-out and expiry call this. */
-  const stopFrame = (): void => {
+  /**
+   * Stops the app and ends its session: sign-out and expiry call this. `keepLease` (expiry of a session that has a renewal lease)
+   * only lets go of the page's hold, so the saved session and its lease stay and the next open restores through them.
+   */
+  const stopFrame = (keepLease = false): void => {
     const ended = running;
     running = undefined;
     dropFrame();
     // The session ends with the frame. Fire and forget: the sign-out has its own short wait.
-    if (ended !== undefined) void ended.session.end().catch(() => undefined);
+    if (ended !== undefined) void (keepLease ? ended.session.detach() : ended.session.end()).catch(() => undefined);
   };
 
   /** Stops the app but keeps its saved session: unload and navigation are not a sign-out. */
@@ -234,9 +237,11 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   const expire = (): void => {
     const name = running?.app.name ?? entry?.name ?? "the app";
-    stopFrame();
+    const renewing = running?.session.renewing === true;
+    stopFrame(renewing);
     setStatus("");
-    showScreen({ title: "Your session expired", lines: ["Your session expired: open the app again. Nothing was lost: what the app saved is in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
+    if (renewing) showScreen({ title: "Your session ended", lines: ["Your session ended. Reopen the app to carry on. You turned on automatic renewal, so it opens without a new approval unless renewal was stopped or reached its limit. Nothing was lost: what the app saved is in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
+    else showScreen({ title: "Your session expired", lines: ["Your session expired: open the app again. Nothing was lost: what the app saved is in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
 
   const signOutNow = (): void => {
@@ -366,7 +371,9 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       onState: (state) => {
         if (mine !== attempt) return;
         if (state === "running") {
-          const until = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(result.session.expiresAt));
+          const end = new Date(result.session.expiresAt);
+          // A renewed session can end days from now, so a date is named whenever it is not today.
+          const until = new Intl.DateTimeFormat(undefined, end.toDateString() === new Date().toDateString() ? { hour: "numeric", minute: "2-digit" } : { dateStyle: "medium", timeStyle: "short" }).format(end);
           setStatus(`${result.app.name} is running. Its session lasts until about ${until}.`, "success");
         } else {
           setStatus(`${result.app.name} stopped. Open it again to restart it.`, "warning");
@@ -394,7 +401,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       el("p", null, [forEntry.description]),
       el("ul", "apps-notes", firstOpenLines(forEntry).map((line) => el("li", null, [line]))),
       ...noticeList(consent.notices),
-      el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
+      el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open. A session lasts up to an hour. If you leave automatic renewal on when you sign in, reopening the app doesn't ask for a new approval."]),
       el("p", "run-caution", [CAUTION]),
     ];
     provenance.textContent = provenanceText(forEntry);

@@ -541,7 +541,11 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     if (provider !== undefined) registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
-    if (restoreFirst) {
+    // Past its signed end, a saved session with a receipt that checks out renews through its lease: no approval, no OpenKey window.
+    // It is looked at before the plain restore, which drops the saved session's pointer once the signed end has passed.
+    // The renewal code (and the lease-checking parts of the SDK it pulls in) loads only when a receipt is kept or a lease came back: a dynamic import by design.
+    const leaseRestore = renewalPrefix === undefined || !hasRenewalReceipt(renewalPrefix) ? null : await (await import("./renewal-receipt.js")).renewalRestoreFor(renewalPrefix);
+    if (restoreFirst && leaseRestore === null) {
       const result = await tinycloud.restoreSession();
       if (result.status !== "restored") await ensureOpenKey();
     }
@@ -555,14 +559,16 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     // address: the SDK restores the record stored for it, checking its shape and expiry but not comparing the record's
     // own address field, and without asking the node. `restoredSessionRefused` below is what asks the node.
     let signedSession: ClientSession | undefined;
-    // Past its signed end, a saved session with a receipt that checks out renews through its lease: no approval, no OpenKey window.
-    // The renewal code (and the lease-checking parts of the SDK it pulls in) loads only when a receipt is kept or a lease came back: a dynamic import by design.
-    const leaseRestore = renewalPrefix === undefined || !hasRenewalReceipt(renewalPrefix) ? null : await (await import("./renewal-receipt.js")).renewalRestoreFor(renewalPrefix);
+    // The end a lease restore extends the session to (epoch ms); the restored session's own SIWE still carries the old signed end.
+    let renewedUntil: number | undefined;
     if (renewalPrefix !== undefined && leaseRestore !== null) {
       let outcome: { status: string; error?: unknown } = { status: "restore-failed" };
       try {
         const renewed = await tinycloud.restoreSessionWithRenewal(leaseRestore.leaseAuthorization, leaseRestore.address);
-        if (renewed.status === "restored") signedSession = renewed.session;
+        if (renewed.status === "restored") {
+          signedSession = renewed.session;
+          renewedUntil = await tinycloud.getRenewalEffectiveExpiry(leaseRestore.leaseAuthorization).then((seconds) => seconds * 1000, () => undefined);
+        }
         else outcome = renewed;
       } catch (error) {
         outcome = { status: "restore-failed", error };
@@ -593,7 +599,8 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       clearRenewalReceipt(renewalPrefix);
       if (approvalOutcome.renewal !== undefined) await (await import("./renewal-receipt.js")).admitSignInRenewal({ tcw: tinycloud, prefix: renewalPrefix, address: session?.address ?? signedSession.address, renewal: approvalOutcome.renewal, arrivedAt: approvalOutcome.arrivedAt });
     }
-    const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
+    const signedEnd = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
+    const sessionExpiresAt = renewedUntil !== undefined && Number.isFinite(renewedUntil) ? Math.max(signedEnd, renewedUntil) : signedEnd;
     const spaces: Record<string, string> = {};
     for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
       spaces[name] = await tinycloud.ensureOwnedSpaceHosted(name);
