@@ -6,7 +6,8 @@
  * bar (src/apps/file-offer.ts), and only the owner's click on Save there starts a download.
  *
  * Types are a short list the runner owns. A browser or a desktop opens HTML, SVG, scripts, executables and
- * archives by running or rendering them, so none of those is on it; adding a type is a reviewed change.
+ * archives by running or rendering them, so none of those is on it. CSV is left off too: a spreadsheet runs a cell
+ * that starts with = + - or @ as a formula, and the runner does not rewrite an app's bytes. Adding a type is a reviewed change.
  */
 
 export interface SaveFileType {
@@ -18,7 +19,6 @@ export interface SaveFileType {
 
 export const SAVE_FILE_TYPES: Readonly<Record<string, SaveFileType>> = Object.freeze({
   "text/plain": { extension: ".txt", label: "text" },
-  "text/csv": { extension: ".csv", label: "spreadsheet text (CSV)" },
   "text/vcard": { extension: ".vcf", label: "contact card (vCard)" },
   "text/markdown": { extension: ".md", label: "Markdown text" },
   "application/json": { extension: ".json", label: "JSON data" },
@@ -36,8 +36,9 @@ export interface SaveFile {
 export type SaveFileCheck = { readonly ok: true; readonly file: SaveFile } | { readonly ok: false; readonly message: string };
 
 // Characters a name may not carry: a path separator, the characters Windows refuses, controls, and the invisible
-// formatting characters (direction overrides, zero-width and byte-order marks) that make a name read as another.
-const REFUSED_NAME_CHARACTER = /[/\\:*?"<>|\p{Cc}\p{Cf}]/u;
+// formatting characters (direction overrides, zero-width and byte-order marks) that make a name read as another,
+// lone surrogates and the line and paragraph separators.
+const REFUSED_NAME_CHARACTER = /[/\\:*?"<>|\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 
 const fail = (message: string): SaveFileCheck => ({ ok: false, message });
@@ -57,7 +58,8 @@ export function checkSaveFile(args: Readonly<Record<string, unknown>>): SaveFile
   if (name.length === 0 || name.length > SAVE_FILE_NAME_MAX) return fail(`The file name must be 1 to ${SAVE_FILE_NAME_MAX} characters.`);
   if (REFUSED_NAME_CHARACTER.test(name)) return fail("The file name can't hold a slash, a character Windows refuses, or a hidden or control character.");
   if (name.startsWith(".") || name.endsWith(".") || name.startsWith(" ") || name.endsWith(" ")) return fail("The file name can't start or end with a dot or a space.");
-  if (WINDOWS_DEVICE.test(name.split(".")[0]!)) return fail("That file name is reserved.");
+  // Windows reads COM¹ as COM1 and drops spaces before the dot, so the test is on the normalised, trimmed base name.
+  if (WINDOWS_DEVICE.test(name.normalize("NFKC").split(".")[0]!.trimEnd())) return fail("That file name is reserved.");
   if (given !== undefined && typeof given !== "string") return fail("The type must be a string.");
   const type = given ?? typeForName(name);
   const known = type === undefined ? undefined : SAVE_FILE_TYPES[type];

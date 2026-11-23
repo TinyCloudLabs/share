@@ -371,6 +371,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
         } else {
           setStatus(`${result.app.name} stopped. Open it again to restart it.`, "warning");
           signOut.disabled = false;
+          offers.clear();
         }
       },
     });

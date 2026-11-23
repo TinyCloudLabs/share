@@ -275,7 +275,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
     if (offers === undefined) return fail("BAD_REQUEST", "Unknown call.");
     const checked = checkSaveFile(args);
     if (!checked.ok) return fail("BAD_REQUEST", checked.message);
-    return { run: async () => (closed ? fail("NOT_CONNECTED", "The app has stopped.") : offers.offer(checked.file) ? { ok: true } : fail("BUSY", "A file is already waiting for the owner to save or dismiss it.")) };
+    return { run: async () => (closed ? fail("NOT_CONNECTED", "The app has stopped.") : offers.offer(checked.file) ? { ok: true } : fail("BUSY", "Not now: a file is waiting for the owner to save or dismiss it, or the owner has only just answered one.")) };
   }
 
   function safeReply(id: string, result: CapResult): void {

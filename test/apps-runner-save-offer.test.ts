@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type AppData, createCapabilityBridge } from "../src/apps/bridge.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
-import { type SaveWith, createFileOffers } from "../src/apps/file-offer.ts";
+import { OFFER_COOLDOWN_MS, SAVE_ARMING_MS, type SaveWith, createFileOffers } from "../src/apps/file-offer.ts";
 import type { SaveFile } from "../src/apps/save-file.ts";
 import { type ManifestSdk, makeAuthorizer } from "../src/apps/grants.ts";
 import type { RunPorts, RunSession, RuntimeSession } from "../src/apps/run.ts";
@@ -28,16 +28,26 @@ describe("the offer the runner shows the owner", () => {
   let host: HTMLElement;
   let saved: SaveFile[];
   let announced: string[];
+  let clock: number;
   const make = (save: SaveWith) => {
-    const offers = createFileOffers({ view: window, appName: () => "Contacts", announce: (line) => { announced.push(line); }, save });
+    const offers = createFileOffers({ view: window, appName: () => "Contacts", announce: (line) => { announced.push(line); }, save, now: () => clock });
     host.append(offers.region, offers.actions);
     return offers;
   };
   const file = (name = "people.vcf", body = "BEGIN:VCARD\r\nEND:VCARD\r\n", type = "text/vcard"): SaveFile => ({ name, type, bytes: text(body) });
-  const click = (label: string): void => {
-    [...host.querySelectorAll("button")].find((button) => button.textContent === label)!.click();
-  };
-  beforeEach(() => { document.body.innerHTML = "<main></main>"; host = document.querySelector("main") as HTMLElement; saved = []; announced = []; });
+  const find = (label: string): HTMLButtonElement => [...host.querySelectorAll("button")].find((button) => button.textContent === label)!;
+  const click = (label: string): void => find(label).click();
+  /** The moment Save becomes usable. */
+  const arm = (): void => { clock += SAVE_ARMING_MS; vi.advanceTimersByTime(SAVE_ARMING_MS); };
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    document.body.innerHTML = "<main></main>";
+    host = document.querySelector("main") as HTMLElement;
+    saved = [];
+    announced = [];
+    clock = 1_000_000;
+  });
+  afterEach(() => { vi.useRealTimers(); });
 
   it("says who offers what, shows Save and Dismiss, and saves nothing until Save is clicked", () => {
     const offers = make(async (f) => { saved.push(f); return "started"; });
@@ -46,29 +56,48 @@ describe("the offer the runner shows the owner", () => {
     expect(offers.offer(file())).toBe(true);
     expect(host.querySelector(".run-offer-text")?.textContent).toBe("Contacts offers a file to save: people.vcf (contact card (vCard), 24 bytes). Nothing is saved unless you choose Save.");
     expect([...host.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Save", "Dismiss"]);
+    arm();
     expect(saved).toEqual([]);
+  });
+
+  it("keeps Save inert while the app is still moving under the owner's pointer, then arms it", async () => {
+    const offers = make(async (f) => { saved.push(f); return "started"; });
+    offers.offer(file());
+    expect(find("Save").disabled).toBe(true);
+    expect(find("Dismiss").disabled).toBe(false);
+    click("Save");
+    vi.advanceTimersByTime(SAVE_ARMING_MS - 1);
+    click("Save");
+    expect(saved).toEqual([]);
+    expect(find("Save").disabled).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(find("Save").disabled).toBe(false);
+    click("Save");
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    expect(offers.offer(file("later.txt", "x", "text/plain"))).toBe(false);
   });
 
   it("saves exactly the offered bytes once, then clears the offer and says so", async () => {
     const offers = make(async (f) => { saved.push(f); return "started"; });
-    offers.offer(file("a.csv", "x,y\n1,2\n", "text/csv"));
+    offers.offer(file("a.json", "{\"a\":1}", "application/json"));
+    arm();
     click("Save");
     click("Save");
     await vi.waitFor(() => expect(host.querySelector("button")).toBeNull());
-    expect(saved.map((f) => [f.name, f.type, read(f)])).toEqual([["a.csv", "text/csv", "x,y\n1,2\n"]]);
+    expect(saved.map((f) => [f.name, f.type, read(f)])).toEqual([["a.json", "application/json", "{\"a\":1}"]]);
     expect(host.querySelector(".run-offer-text")).toBeNull();
-    expect(announced).toEqual(["Started the download of a.csv. Your browser decides where it goes."]);
-    expect(offers.offer(file("b.txt", "b", "text/plain"))).toBe(true);
+    expect(announced).toEqual(["Started the download of a.json. Your browser decides where it goes."]);
   });
 
   it("says Saved when the owner picked the place themselves", async () => {
     const offers = make(async () => "saved");
     offers.offer(file());
+    arm();
     click("Save");
     await vi.waitFor(() => expect(announced).toEqual(["Saved people.vcf."]));
   });
 
-  it("refuses a second offer while one waits, and takes one again after Dismiss", () => {
+  it("refuses a second offer while one waits, and for a short while after the owner answers it, then takes one again", () => {
     const offers = make(async (f) => { saved.push(f); return "started"; });
     expect(offers.offer(file("one.txt", "1", "text/plain"))).toBe(true);
     expect(offers.offer(file("two.txt", "2", "text/plain"))).toBe(false);
@@ -76,6 +105,18 @@ describe("the offer the runner shows the owner", () => {
     click("Dismiss");
     expect(host.querySelector("button")).toBeNull();
     expect(saved).toEqual([]);
+    // A re-offer loop or a double click cannot chain a second offer under the owner's next click.
+    expect(offers.offer(file("two.txt", "2", "text/plain"))).toBe(false);
+    clock += OFFER_COOLDOWN_MS - 1;
+    expect(offers.offer(file("two.txt", "2", "text/plain"))).toBe(false);
+    clock += 1;
+    expect(offers.offer(file("two.txt", "2", "text/plain"))).toBe(true);
+  });
+
+  it("does not make the next offer wait after the app stopped one", () => {
+    const offers = make(async () => "started");
+    offers.offer(file("one.txt", "1", "text/plain"));
+    offers.clear();
     expect(offers.offer(file("two.txt", "2", "text/plain"))).toBe(true);
   });
 
@@ -83,8 +124,9 @@ describe("the offer the runner shows the owner", () => {
     let outcome: "cancelled" | "boom" = "cancelled";
     const offers = make(async () => { if (outcome === "boom") throw new Error("disk full"); return "cancelled"; });
     offers.offer(file());
+    arm();
     click("Save");
-    await vi.waitFor(() => expect((host.querySelector("button") as HTMLButtonElement).disabled).toBe(false));
+    await vi.waitFor(() => expect(find("Save").disabled).toBe(false));
     expect(host.querySelector(".run-offer-text")).not.toBeNull();
     expect(announced).toEqual([]);
     outcome = "boom";
@@ -97,6 +139,7 @@ describe("the offer the runner shows the owner", () => {
     let finish: () => void = () => undefined;
     const offers = make(() => new Promise((resolve) => { finish = () => resolve("started"); }));
     offers.offer(file());
+    arm();
     click("Save");
     offers.clear();
     finish();
@@ -135,19 +178,19 @@ describe("file.save on the bridge", () => {
 
   it("offers a valid file to the runner and answers ok, needing no grant and touching no data", async () => {
     const bridge = build();
-    expect(await call(bridge, { name: "meals.csv", body: "a,b\n1,2\n" })).toEqual({ ok: true });
+    expect(await call(bridge, { name: "meals.json", body: "a,b\n1,2\n" })).toEqual({ ok: true });
     expect(offered).toHaveLength(1);
-    expect(offered[0]).toMatchObject({ name: "meals.csv", type: "text/csv" });
+    expect(offered[0]).toMatchObject({ name: "meals.json", type: "application/json" });
     expect(read(offered[0]!)).toBe("a,b\n1,2\n");
   });
 
   it("answers BUSY while the runner holds an earlier offer", async () => {
-    const result = await call(build(false), { name: "meals.csv", body: "x" });
+    const result = await call(build(false), { name: "meals.json", body: "x" });
     expect(result).toMatchObject({ ok: false, error: { code: "BUSY" } });
   });
 
   it.each([
-    [{ name: "../meals.csv", body: "x" }],
+    [{ name: "../meals.json", body: "x" }],
     [{ name: "page.html", body: "<script>1</script>" }],
     [{ name: "a.txt", type: "text/html", body: "x" }],
     [{ name: "a.txt", body: "" }],
@@ -251,27 +294,28 @@ describe("the runner page when an app offers a file", () => {
 
   it("shows the offer in the runner's bar, outside the frame, and saves only on the owner's click", async () => {
     const { iframe, results } = await run();
-    fromFrame(iframe, { type: "cap/file.save", body: { id: "1", args: { name: "meals.csv", body: "a,b\n1,2\n" } } });
+    fromFrame(iframe, { type: "cap/file.save", body: { id: "1", args: { name: "meals.json", body: "a,b\n1,2\n" } } });
     await vi.waitFor(() => expect(results().map((message) => message.result)).toEqual([{ ok: true }]));
     const region = root.querySelector(".run-bar .run-offer-region");
-    expect(region?.textContent).toBe("Health Log offers a file to save: meals.csv (spreadsheet text (CSV), 8 bytes). Nothing is saved unless you choose Save.");
+    expect(region?.textContent).toBe("Health Log offers a file to save: meals.json (JSON data, 8 bytes). Nothing is saved unless you choose Save.");
     expect(root.querySelector("iframe")?.closest(".run-bar")).toBeNull();
     expect(saved).toEqual([]);
     // A second offer waits its turn: the app is told BUSY and the first stays.
     fromFrame(iframe, { type: "cap/file.save", body: { id: "2", args: { name: "again.txt", body: "x" } } });
     await vi.waitFor(() => expect(results()).toHaveLength(2));
     expect(results()[1]!.result).toMatchObject({ ok: false, error: { code: "BUSY" } });
-    expect(region?.textContent).toContain("meals.csv");
+    expect(region?.textContent).toContain("meals.json");
+    await vi.waitFor(() => expect(button("Save")!.disabled).toBe(false));
     button("Save")!.click();
     await vi.waitFor(() => expect(saved).toHaveLength(1));
     expect(read(saved[0]!)).toBe("a,b\n1,2\n");
-    await vi.waitFor(() => expect(root.querySelector(".run-bar .run-status")?.textContent).toBe("Started the download of meals.csv. Your browser decides where it goes."));
+    await vi.waitFor(() => expect(root.querySelector(".run-bar .run-status")?.textContent).toBe("Started the download of meals.json. Your browser decides where it goes."));
     expect(root.querySelector(".run-offer-text")).toBeNull();
   });
 
   it("drops a waiting offer when the owner signs out of the app", async () => {
     const { iframe, results } = await run();
-    fromFrame(iframe, { type: "cap/file.save", body: { id: "1", args: { name: "meals.csv", body: "x" } } });
+    fromFrame(iframe, { type: "cap/file.save", body: { id: "1", args: { name: "meals.json", body: "x" } } });
     await vi.waitFor(() => expect(results()).toHaveLength(1));
     expect(root.querySelector(".run-offer-text")).not.toBeNull();
     button("Sign out of this app")!.click();

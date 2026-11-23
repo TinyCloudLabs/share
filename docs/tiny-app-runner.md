@@ -139,22 +139,26 @@ taken from the name's extension when it is left out. The call is an **offer**, n
 - The runner checks it first (`src/apps/save-file.ts`). Name: 1 to 100 characters; no slash, backslash,
   colon or other character Windows refuses, no control or invisible formatting character (direction
   overrides, zero-width, byte-order mark), no leading or trailing dot or space, no Windows device name, and it
-  must end with the extension of its type. Type: only `text/plain` (`.txt`), `text/csv` (`.csv`), `text/vcard`
-  (`.vcf`), `text/markdown` (`.md`) and `application/json` (`.json`). Anything a browser or desktop would run or
-  render (HTML, SVG, scripts, executables, archives) is not on the list; adding a type is a reviewed change.
+  must end with the extension of its type. Type: only `text/plain` (`.txt`), `text/vcard` (`.vcf`),
+  `text/markdown` (`.md`) and `application/json` (`.json`). Anything a browser or desktop would run or render
+  (HTML, SVG, scripts, executables, archives) is not on the list. CSV is left off on purpose: a spreadsheet runs a
+  cell that starts with `=`, `+`, `-` or `@` as a formula, and the runner does not rewrite an app's bytes. Adding a
+  type is a reviewed change.
   Size: not empty, and within the 1 MB call limit (the name and type count too). A refused file is
   `BAD_REQUEST` (or `TOO_LARGE`) and nothing is shown.
 - A valid file is shown in the runner's own bar, outside the frame (`src/apps/file-offer.ts`): "`<app>` offers a
   file to save: `<name>` (`<type>`, `<size>`). Nothing is saved unless you choose Save." with **Save** and
   **Dismiss**. The text is set with `textContent`; the live region announces it; focus does not move.
-- **Save** is a click in the runner's own document, so the app cannot press it. Where the browser has a
-  save-file picker the owner picks the place; otherwise the browser's own download runs with the offered name.
-  The runner then says what it did. Closing the picker keeps the offer.
+- **Save** is a click in the runner's own document, so the app cannot press it. It is inert for 0.7 s after the
+  offer appears, because the offer pushes the app down and a click aimed at the app must not land on it. Where
+  the browser has a save-file picker the owner picks the place; otherwise the browser's own download runs with
+  the offered name. The runner then says what it did. Closing the picker keeps the offer.
 - The call answers `{ok: true}` as soon as the offer is showing. A browser does not tell a page whether a
   download was kept, so "saved" is never claimed to the app.
-- One offer waits at a time: another call before the owner chooses is `BUSY`. The offer and its bytes are dropped
-  when the owner saves or dismisses it, or when the app stops, the owner signs out of the app or the session
-  ends.
+- One offer waits at a time: another call before the owner chooses is `BUSY`, and so is one made within 2 s of the
+  owner saving or dismissing (a double click or a re-offer loop cannot chain). The offer and its bytes are dropped
+  when the owner saves or dismisses it, or when the app stops or fails, the owner signs out of the app or the
+  session ends.
 - It needs no manifest grant: the file is built from data the app already holds, and the owner's click is the
   consent. "What this app can do" says so in one fixed line. The offered name is the app's own text, so the
   owner decides on what they read.

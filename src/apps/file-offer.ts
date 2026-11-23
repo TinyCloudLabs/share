@@ -53,6 +53,11 @@ export const saveWithBrowser: SaveWith = async (file, view) => {
   return "started";
 };
 
+/** Save stays inert for this long after an offer appears: the offer pushes the app down, and a click aimed at the app must not land on Save. */
+export const SAVE_ARMING_MS = 700;
+/** After the owner saves or dismisses an offer, the next one is refused (BUSY) for this long, so a double click or a re-offer loop cannot chain. */
+export const OFFER_COOLDOWN_MS = 2000;
+
 export interface FileOffersOptions {
   readonly view: Window;
   /** The app's name, as the runner shows it. */
@@ -60,6 +65,8 @@ export interface FileOffersOptions {
   /** Sets the runner's status line. */
   readonly announce: (text: string, tone: "info" | "success" | "warning") => void;
   readonly save?: SaveWith;
+  /** Tests only: the clock the cooldown reads. */
+  readonly now?: () => number;
 }
 
 export interface FileOffersView {
@@ -67,28 +74,38 @@ export interface FileOffersView {
   readonly region: HTMLElement;
   /** Save and Dismiss; empty when nothing is offered. */
   readonly actions: HTMLElement;
-  /** True when the offer is now showing; false while an earlier one still waits. */
+  /** True when the offer is now showing; false while an earlier one waits or the owner has only just answered one. */
   offer(file: SaveFile): boolean;
-  /** Drops a waiting offer and its bytes. */
+  /** Drops a waiting offer and its bytes (the app stopped, or the session ended). */
   clear(): void;
 }
 
 export function createFileOffers(options: FileOffersOptions): FileOffersView {
   const save = options.save ?? saveWithBrowser;
+  const now = options.now ?? Date.now;
   const region = el("div", "run-offer-region", [], { role: "status" });
   const actions = el("div", "run-offer-actions", []);
   let pending: SaveFile | undefined;
   let saving = false;
+  let armTimer: number | undefined;
+  let quietUntil = 0;
 
   const clear = (): void => {
+    options.view.clearTimeout(armTimer);
+    armTimer = undefined;
     pending = undefined;
     saving = false;
     region.replaceChildren();
     actions.replaceChildren();
   };
+  /** The owner answered: the offer goes and the next one waits out the cooldown. */
+  const answered = (): void => {
+    clear();
+    quietUntil = now() + OFFER_COOLDOWN_MS;
+  };
 
   const choose = async (file: SaveFile, saveButton: HTMLButtonElement, dismissButton: HTMLButtonElement): Promise<void> => {
-    if (saving || pending !== file) return;
+    if (saving || pending !== file || saveButton.disabled) return;
     saving = true;
     saveButton.disabled = true;
     dismissButton.disabled = true;
@@ -101,7 +118,7 @@ export function createFileOffers(options: FileOffersOptions): FileOffersView {
         dismissButton.disabled = false;
         return;
       }
-      clear();
+      answered();
       options.announce(outcome === "saved" ? `Saved ${file.name}.` : `Started the download of ${file.name}. Your browser decides where it goes.`, "success");
     } catch {
       if (pending !== file) return;
@@ -117,13 +134,18 @@ export function createFileOffers(options: FileOffersOptions): FileOffersView {
     actions,
     clear,
     offer(file): boolean {
-      if (pending !== undefined) return false;
+      if (pending !== undefined || now() < quietUntil) return false;
       pending = file;
       const label = SAVE_FILE_TYPES[file.type]?.label ?? file.type;
       const saveButton = el("button", "tc-button tc-button--primary apps-button", ["Save"], { type: "button" });
       const dismissButton = el("button", "tc-button apps-button", ["Dismiss"], { type: "button" });
+      saveButton.disabled = true;
+      armTimer = options.view.setTimeout(() => {
+        armTimer = undefined;
+        if (pending === file && !saving) saveButton.disabled = false;
+      }, SAVE_ARMING_MS);
       saveButton.addEventListener("click", () => { void choose(file, saveButton, dismissButton); });
-      dismissButton.addEventListener("click", () => { if (pending === file && !saving) clear(); });
+      dismissButton.addEventListener("click", () => { if (pending === file && !saving) answered(); });
       // textContent only: the name is the app's own text.
       region.replaceChildren(el("p", "run-offer-text", [`${options.appName()} offers a file to save: ${file.name} (${label}, ${fileSizeLabel(file.bytes.byteLength)}). Nothing is saved unless you choose Save.`]));
       actions.replaceChildren(saveButton, dismissButton);
