@@ -443,7 +443,7 @@ describe("dataSize", () => {
   });
 
   it("every operation name in the contract has a key set", () => {
-    expect([...CAP_OPS]).toEqual(["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute"]);
+    expect([...CAP_OPS]).toEqual(["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute", "file.save"]);
   });
 });
 

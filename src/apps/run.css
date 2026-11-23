@@ -63,6 +63,26 @@
   margin: 0;
 }
 
+/* A file the app offers: text in a live region, Save and Dismiss beside it. Both are empty (and hidden) when nothing is offered. */
+.run-offer-region,
+.run-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-2);
+}
+
+.run-offer-region:empty,
+.run-offer-actions:empty {
+  display: none;
+}
+
+.run-offer-text {
+  margin: 0;
+  max-width: 80ch;
+  font-weight: var(--tc-weight-medium);
+  overflow-wrap: anywhere;
+}
+
 .run-info {
   display: grid;
   gap: var(--tc-space-2);

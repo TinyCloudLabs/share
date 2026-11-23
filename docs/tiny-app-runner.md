@@ -75,7 +75,7 @@ version that has left the catalog has nothing to repair from: the page says so a
 
 ## The bridge
 
-An installed app writes `import { sql, kv } from "@tinycloud/app"`. That module is a runner-only
+An installed app writes `import { sql, kv, file } from "@tinycloud/app"`. That module is a runner-only
 library file (`JSX_MODULE_SPECS`, `runnerOnly`): the share viewer never loads it, so on a shared
 page the import is an unknown library. It posts `{v:1, type:"cap/<op>", id, args}` to the frame's
 parent and resolves with the answer. It holds nothing secret and decides nothing.
@@ -100,6 +100,7 @@ Nothing about the session, its keys, the owner, the node or any URL is in any fr
 | `kv.del(key)` | `{key}` | `{ok}` |
 | `sql.query(db, text, params = [])` | `{db, sql, params}` | `{ok, columns, rows, rowCount}` |
 | `sql.execute(db, text, params = [])` | `{db, sql, params}` | `{ok, changes, lastInsertRowId}` |
+| `file.save(name, body, opts?)` | `{name, body, type?}`; body is a string or Uint8Array | `{ok}` once the offer is showing (see below) |
 
 Every call resolves `{ok: true, …}` or `{ok: false, error: {code, message}}`; the bridge never
 throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FAILED`, `SQL_ERROR`,
@@ -128,6 +129,39 @@ throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FA
   back before retrying a write. A call that timed out keeps its slot until it settles or 60 s pass.
 - A frame message from the page's own window, another origin or a stranger frame, a wrong nonce, `v≠1`, an
   unknown type, extra keys or a repeated id is dropped without a reply.
+
+### Saving a file: `file.save`
+
+The frame has no downloads, so an app that builds a file (an export) hands it to the runner:
+`file.save(name, body, opts?)` with `{name, body, type?}`. `body` is a string or Uint8Array; `opts.type` is
+taken from the name's extension when it is left out. The call is an **offer**, not a save:
+
+- The runner checks it first (`src/apps/save-file.ts`). Name: 1 to 100 characters; no slash, backslash,
+  colon or other character Windows refuses, no control or invisible formatting character (direction
+  overrides, zero-width, byte-order mark), no leading or trailing dot or space, no Windows device name, and it
+  must end with the extension of its type. Type: only `text/plain` (`.txt`), `text/vcard` (`.vcf`),
+  `text/markdown` (`.md`) and `application/json` (`.json`). Anything a browser or desktop would run or render
+  (HTML, SVG, scripts, executables, archives) is not on the list. CSV is left off on purpose: a spreadsheet runs a
+  cell that starts with `=`, `+`, `-` or `@` as a formula, and the runner does not rewrite an app's bytes. Adding a
+  type is a reviewed change.
+  Size: not empty, and within the 1 MB call limit (the name and type count too). A refused file is
+  `BAD_REQUEST` (or `TOO_LARGE`) and nothing is shown.
+- A valid file is shown in the runner's own bar, outside the frame (`src/apps/file-offer.ts`): "`<app>` offers a
+  file to save: `<name>` (`<type>`, `<size>`). Nothing is saved unless you choose Save." with **Save** and
+  **Dismiss**. The text is set with `textContent`; the live region announces it; focus does not move.
+- **Save** is a click in the runner's own document, so the app cannot press it. It is inert for 0.7 s after the
+  offer appears, because the offer pushes the app down and a click aimed at the app must not land on it. Where
+  the browser has a save-file picker the owner picks the place; otherwise the browser's own download runs with
+  the offered name. The runner then says what it did. Closing the picker keeps the offer.
+- The call answers `{ok: true}` as soon as the offer is showing. A browser does not tell a page whether a
+  download was kept, so "saved" is never claimed to the app.
+- One offer waits at a time: another call before the owner chooses is `BUSY`, and so is one made within 2 s of the
+  owner saving or dismissing (a double click or a re-offer loop cannot chain). The offer and its bytes are dropped
+  when the owner saves or dismisses it, or when the app stops or fails, the owner signs out of the app or the
+  session ends.
+- It needs no manifest grant: the file is built from data the app already holds, and the owner's click is the
+  consent. "What this app can do" says so in one fixed line. The offered name is the app's own text, so the
+  owner decides on what they read.
 
 ## What an app can and cannot do
 
@@ -202,7 +236,8 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
 
 - `npm test`: the classifier (`apps-sql-class`), the grant cap and stored-app checks (`apps-runner-grants`), the
   bridge handler with a fake data port (`apps-runner-bridge`), the frame side and the client module
-  (`apps-runner-frame`, `jsx-sandbox`, `jsx-form-events`), the page (`apps-runner-view`, `apps-runner-page`).
+  (`apps-runner-frame`, `jsx-sandbox`, `jsx-form-events`), the page (`apps-runner-view`, `apps-runner-page`), and
+  the file offer (`apps-save-file`, `apps-runner-save-offer`).
 - `TC500_NODE_WORKTREE=<tinycloud-node v1.21.0 tree> TC500_OPENCREDENTIALS_WORKTREE=<OpenCredentials 846c018 tree>
   npx tsx test/e2e-prod/runner-gate.mjs`: the native-stack gate described in its header (install both samples,
   open them, log a meal and read the row, cross-app read, widened and narrowed manifests, the pin (an edited
