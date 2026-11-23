@@ -80,6 +80,7 @@ vi.mock("@tinycloud/web-sdk", async () => {
       activeAddress(): string | undefined {
         return savedSessionExists ? "0x0" : undefined;
       }
+      async saveRuntimeGrants(): Promise<void> {}
     },
   };
 });

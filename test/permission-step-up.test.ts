@@ -24,7 +24,7 @@ describe("asking OpenKey through the SDK with its own windows turned off", () =>
     const permissions = [{ service: "tinycloud.encryption", path: "urn:tinycloud:encryption:did:pkh:eip155:1:0xabc:default", actions: ["decrypt"], skipPrefix: true }];
     await expect(requestInOpenKey(sdkClient(grant), permissions, { expiryMs: 3_600_000 })).resolves.toBe(true);
     expect(grant).toHaveBeenCalledTimes(1);
-    expect(grant).toHaveBeenCalledWith(permissions, { expiryMs: 3_600_000 });
+    expect(grant).toHaveBeenCalledWith(permissions, { expiryMs: 3_600_000, allowPromptSuppression: false });
     // No SDK window was put up for it.
     expect(document.querySelector("dialog")).toBeNull();
   });

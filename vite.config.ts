@@ -26,6 +26,7 @@ import { renderViewerHeaders, withUserContentOrigin } from "./src/artifact/user-
 import { ONE_BUILD_ENV, buildKindOf, renderCourierFrameHeaders } from "./src/courier/one-origins.ts";
 import { parseUserContentOrigin } from "./src/viewer/user-content-origin.ts";
 import { renderLandingTemplate } from "./src/landing/brand.ts";
+import { OPENKEY_MANIFEST_PATH, renderOpenKeyManifestJson } from "./src/share/share-manifest.ts";
 
 /** Share is a static UX. Every live authority/data operation goes to TinyCloud. */
 function shareRouteRewrite(): Plugin {
@@ -268,6 +269,30 @@ function courierDevNode(node: string | undefined): Plugin {
   };
 }
 
+/**
+ * Publishes the exact `shareManifest` object passed to the SDK at
+ * `/.well-known/openkey-manifest.json` so OpenKey can verify the manifest digest
+ * against this origin for every owner.
+ */
+function openkeyManifest(): Plugin {
+  const source = renderOpenKeyManifestJson();
+  const serve = (server: ViteDevServer | PreviewServer): void => {
+    server.middlewares.use((request, response, next) => {
+      if ((request.url ?? "").split("?", 1)[0] !== OPENKEY_MANIFEST_PATH) { next(); return; }
+      response.setHeader("content-type", "application/json; charset=utf-8");
+      response.end(source);
+    });
+  };
+  return {
+    name: "openkey-manifest",
+    configureServer: serve,
+    configurePreviewServer: serve,
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: OPENKEY_MANIFEST_PATH.slice(1), source });
+    },
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   // Where sandbox documents and runtime files are served from; "" = same origin.
@@ -275,7 +300,7 @@ export default defineConfig(({ mode }) => {
   return {
     base: "/",
     ...(mode === "one" ? { server: { https: oneDevHttps() } } : {}),
-    plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(userContentOrigin), artifactSandboxHtml(userContentOrigin), jsxSandbox(userContentOrigin), userContentOriginPolicy(userContentOrigin), courierFrameAncestors(env[ONE_BUILD_ENV]), courierDevNode(process.env["COURIER_DEV_NODE"])],
+    plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), openkeyManifest(), mermaidSandboxHtml(userContentOrigin), artifactSandboxHtml(userContentOrigin), jsxSandbox(userContentOrigin), userContentOriginPolicy(userContentOrigin), courierFrameAncestors(env[ONE_BUILD_ENV]), courierDevNode(process.env["COURIER_DEV_NODE"])],
     build: {
       rollupOptions: {
         // web-sdk's prebuilt entry inlines the SDK's WebAssembly as base64; its own chunk lets .gitleaks.toml name that one built file.

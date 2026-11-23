@@ -5,15 +5,39 @@ import type { OpenKeyAuthorizeTinyCloud } from "@tinycloud/node-sdk/core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "viem";
 import type { SharePublicConfig } from "../email-share/config.js";
-import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
+import {
+  ACCOUNT_SPACE,
+  accountRegistryReadPermissions,
+  credentialSpacePermissions,
+  FILES_FOR_YOU_PREFIX,
+  FILES_FOR_YOU_SPACE,
+  filesForYouPermissions,
+  historyPermissions,
+  ownerSpacePermissions,
+  SHARE_APPLICATION_PREFIX,
+  SHARE_APPLICATION_SPACE,
+  shareManifest,
+} from "./share-manifest.js";
 import { trackWalletApproval } from "./wallet-approval.js";
 import { SIGN_IN_NARROWED } from "./sender-failure.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 import { LIBRARY_SESSION_PREFIX } from "./library-session.js";
 import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, RENEWAL_RESTORE_UNAVAILABLE, renewalRestoreEnded, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
 
+export {
+  accountRegistryReadPermissions,
+  credentialSpacePermissions,
+  FILES_FOR_YOU_PREFIX,
+  FILES_FOR_YOU_SPACE,
+  filesForYouPermissions,
+  historyPermissions,
+  ownerSpacePermissions,
+  SHARE_APPLICATION_PREFIX,
+  SHARE_APPLICATION_SPACE,
+  shareManifest,
+} from "./share-manifest.js";
 export { SignInOptionError } from "./sign-in-label.js";
 
 export interface OpenKeyShareSession {
@@ -24,10 +48,6 @@ export interface OpenKeyShareSession {
 
 export type ShareTinyCloud = TinyCloudWeb;
 
-export const SHARE_APPLICATION_SPACE = "applications";
-export const SHARE_APPLICATION_PREFIX = "xyz.tinycloud.share/";
-export const FILES_FOR_YOU_SPACE = "files-for-you";
-export const FILES_FOR_YOU_PREFIX = "v1/";
 export const MAX_SHARE_FILE_BYTES = 100 * 1024 * 1024;
 
 export async function authenticateWithOpenKey(onStatus: (message: string) => void, guardApproval: ApprovalGuard = (wait) => wait(), appName = DEFAULT_APP_NAME): Promise<OpenKeyShareSession> {
@@ -69,48 +89,6 @@ async function explicitOpenKeyApproval(session: OpenKeyShareSession, request: Si
   return typeof signature === "string" && await verifyEip191MessageSignature(request.message, signature, session.address)
     ? { approved: true, signature }
     : { approved: false, reason: "OpenKey did not return a signature from the signed-in account" };
-}
-
-/*
- * The owner-policy path works only inside the authenticated sender's
- * applications space. Reads build the library picker; new encrypted share
- * objects are written below `xyz.tinycloud.share/shares/`. These grants never
- * delegate authority or content to the static Share host. The trailing slash
- * is a resource boundary, and `del` is deliberately absent.
- */
-export function ownerSpacePermissions(): PermissionEntry[] {
-  return [
-    { service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: SHARE_APPLICATION_PREFIX, actions: ["get", "list", "metadata"], skipPrefix: true },
-    { service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: `${SHARE_APPLICATION_PREFIX}shares/`, actions: ["put"], skipPrefix: true },
-  ];
-}
-
-export function historyPermissions(): PermissionEntry[] {
-  return [{ service: "tinycloud.vault", space: SHARE_APPLICATION_SPACE, path: "sender-history/v2/records/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
-}
-
-export function credentialSpacePermissions(): PermissionEntry[] {
-  return [{ service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: `${SHARE_APPLICATION_PREFIX}credentials/v1/`, actions: ["get", "put", "list"], skipPrefix: true }];
-}
-
-/** Private, recipient-owned copies created only by the post-render save action. */
-export function filesForYouPermissions(): PermissionEntry[] {
-  return [{ service: "tinycloud.kv", space: FILES_FOR_YOU_SPACE, path: FILES_FOR_YOU_PREFIX, actions: ["get", "put", "list"], skipPrefix: true }];
-}
-
-/** The account space, which holds the account's own registry (its spaces, apps and delegation list). */
-const ACCOUNT_SPACE = "account";
-
-/*
- * The account-registry rows the library reads itself: the delegation list
- * (share status and owner revoke list the account's grants) and the space
- * records (a restored session is checked with one read of its space's record).
- */
-export function accountRegistryReadPermissions(): PermissionEntry[] {
-  return [
-    { service: "tinycloud.delegation", space: ACCOUNT_SPACE, path: "", actions: ["list"], skipPrefix: true },
-    { service: "tinycloud.kv", space: ACCOUNT_SPACE, path: "spaces/", actions: ["get"], skipPrefix: true },
-  ];
 }
 
 /** Why an OpenKey approval did not produce a usable signature. */
@@ -524,7 +502,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     } else {
       const owner = await ensureOpenKey();
       provider = new ObservedOpenKeyProvider(owner.openkey, owner.auth, owner.address, verifyEip191MessageSignature, guardedApproval);
-      manifest = typeof given === "function" ? freezeChecked(given(owner.address), owner.address) : checked!;
+      manifest = typeof given === "function" ? freezeChecked(given(owner.address), owner.address) : (checkManifest(options, checked!, owner.address), checked!);
     }
     if (manifest === undefined) throw new Error("sign-in-no-manifest");
     const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
@@ -667,29 +645,6 @@ const runUnguarded: ApprovalGuard = (wait) => wait();
 
 function closeOpenKeyFlows(openkey: OpenKey): void {
   try { openkey.disconnect(); } catch { /* Nothing was open. */ }
-}
-
-/** What Share's own library needs: the owner space, history, credentials and the private copies area, and decrypt on the share/ prefix. */
-export function shareManifest(address: string): Manifest {
-  return {
-    manifest_version: 1,
-    app_id: "xyz.tinycloud.share",
-    name: "TinyCloud Share",
-    description: "Create and reopen encrypted shares.",
-    space: SHARE_APPLICATION_SPACE,
-    prefix: "",
-    defaults: false,
-    includePublicSpace: false,
-    permissions: [
-      ...ownerSpacePermissions(),
-      ...historyPermissions(),
-      ...credentialSpacePermissions(),
-      ...filesForYouPermissions(),
-      // Decrypt on the share/ prefix, built by the SDK: the node registers a share's policy only for an owner holding decrypt on the share's key.
-      ...pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }),
-      ...accountRegistryReadPermissions(),
-    ],
-  };
 }
 
 /** The scope of `shareManifest`: where Share's library may read and write, and nothing else. */

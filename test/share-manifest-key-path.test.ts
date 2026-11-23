@@ -3,7 +3,7 @@
 // sign-in scope guard accepts exactly it and nothing broader.
 import { getAddress } from "viem";
 import { describe, expect, it } from "vitest";
-import { resolveManifest } from "@tinycloud/sdk-core";
+import { pkhDid, resolveManifest, resolveManifestOwner } from "@tinycloud/sdk-core";
 import type { PermissionEntry } from "@tinycloud/web-sdk";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { assertManifestInScope, ManifestRejectedError, type ManifestScope } from "../src/share/manifest-policy.js";
@@ -17,8 +17,9 @@ const KEY_CREATE = "tinycloud.encryption/key.create";
 describe("the library's sign-in manifest", () => {
   it("asks for decrypt on the share/ prefix of the account's own default network, exactly as the SDK names it, and never for key creation", () => {
     const [entry] = pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: ADDRESS }) });
-    expect(shareManifest(ADDRESS).permissions).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption", path: entry!.path }));
-    const resources = resolveManifest(shareManifest(ADDRESS)).resources;
+    const resolved = resolveManifestOwner(shareManifest, pkhDid(ADDRESS, 1));
+    expect(resolved.permissions).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption", path: entry!.path }));
+    const resources = resolveManifest(resolved).resources;
     const prefix = resources.filter((resource) => resource.path === `urn:tinycloud:encryption:did:pkh:eip155:1:${getAddress(ADDRESS)}:default/share/`);
     expect(prefix).toHaveLength(1);
     expect(prefix[0]!.actions).toEqual([DECRYPT]);
@@ -26,8 +27,8 @@ describe("the library's sign-in manifest", () => {
   });
 
   it("stays inside the library's sign-in scope, whatever the case of the address", () => {
-    expect(() => assertManifestInScope(shareManifest(ADDRESS), SHARE_MANIFEST_SCOPE, ADDRESS)).not.toThrow();
-    expect(() => assertManifestInScope(shareManifest(ADDRESS), SHARE_MANIFEST_SCOPE, getAddress(ADDRESS))).not.toThrow();
+    expect(() => assertManifestInScope(shareManifest, SHARE_MANIFEST_SCOPE, ADDRESS)).not.toThrow();
+    expect(() => assertManifestInScope(shareManifest, SHARE_MANIFEST_SCOPE, getAddress(ADDRESS))).not.toThrow();
   });
 
   const [own] = pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: ADDRESS }) });
@@ -40,7 +41,7 @@ describe("the library's sign-in manifest", () => {
     ["the prefix on another chain", [{ service: "tinycloud.encryption", path: own!.path.replace(":eip155:1:", ":eip155:10:"), actions: [DECRYPT] }]],
     ["key.create on a kv path (the bare action must not be a wildcard)", [{ service: "tinycloud.kv", path: "xyz.tinycloud.share/x", actions: ["key.create"] }]],
   ])("refuses %s", (_name, permissions) => {
-    const manifest = shareManifest(ADDRESS);
+    const manifest = { ...shareManifest };
     manifest.permissions = [...manifest.permissions!, ...permissions];
     expect(() => assertManifestInScope(manifest, SHARE_MANIFEST_SCOPE, ADDRESS)).toThrow();
   });
