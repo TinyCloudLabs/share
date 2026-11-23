@@ -1,10 +1,17 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { afterAll, describe, expect, it } from "vitest";
 import type { Plugin } from "vite";
 import { OPENKEY_MANIFEST_PATH, renderOpenKeyManifestJson, shareManifest } from "../src/share/share-manifest.js";
 import viteConfig from "../vite.config.ts";
 
+const ROOT = resolve(import.meta.dirname, "..");
+const run = promisify(execFile);
+const outDirs: string[] = [];
 const APP_KEYS_FILE = new URL("../public/.well-known/openkey-app-keys.json", import.meta.url);
 const OPENKEY_MAX_BYTES = 64 * 1024;
 const OPENKEY_ABILITIES = ["key.create", "decrypt", "key.block", "key.unblock"];
@@ -14,7 +21,7 @@ const CONTACTS_SEAL_KEY_PATH = "apps/xyz.tinycloud.share/xyz.tinycloud.tinyapps.
 /**
  * The rules OpenKey applies to a `keys` block: one of `path` or `prefix` per entry, a non-empty de-duplicated
  * ability list from a fixed set, at most 32 entries, no other field, and a path of `apps/<app id>/` plus 1 to 8
- * segments of [a-z0-9._-]. Any fault makes the whole block invalid.
+ * segments of [a-z0-9._-] (8 counting `apps`, 255 characters in all). Any fault makes the whole block invalid.
  */
 function openKeyAcceptsKeys(appId: string, keys: unknown): boolean {
   if (!Array.isArray(keys) || keys.length > 32) return false;
@@ -35,8 +42,9 @@ function openKeyAcceptsKeys(appId: string, keys: unknown): boolean {
     if (typeof path !== "string" || seen.has(path)) return false;
     seen.add(path);
     const parts = path.split("/");
-    if (parts[0] !== "apps" || parts[1] !== appId || parts.length < 3 || parts.length > 10) return false;
-    if (!parts.slice(1).every((part) => segment.test(part))) return false;
+    // OpenKey: at most 8 segments counting `apps`, at least 3, every segment valid, the whole path at most 255 characters.
+    if (path.length > 255 || parts[0] !== "apps" || parts[1] !== appId || parts.length < 3 || parts.length > 8) return false;
+    if (!parts.every((part) => segment.test(part))) return false;
   }
   return true;
 }
@@ -48,6 +56,8 @@ function resolvedConfig() {
   if (resolved instanceof Promise) throw new Error("unexpected async vite config");
   return resolved;
 }
+
+afterAll(() => { for (const dir of outDirs) rmSync(dir, { recursive: true, force: true }); });
 
 describe("TC-4036 the published app-keys file for sealed Contacts", () => {
   const bytes = readFileSync(APP_KEYS_FILE);
@@ -71,20 +81,24 @@ describe("TC-4036 the published app-keys file for sealed Contacts", () => {
     expect(openKeyAcceptsKeys(app, [{ path: CONTACTS_SEAL_KEY_PATH, abilities: ["decrypt"], note: "x" }])).toBe(false);
     expect(openKeyAcceptsKeys(app, [{ path: CONTACTS_SEAL_KEY_PATH, abilities: ["decrypt", "decrypt"] }])).toBe(false);
     expect(openKeyAcceptsKeys(app, [{ path: CONTACTS_SEAL_KEY_PATH, abilities: [] }])).toBe(false);
+    expect(openKeyAcceptsKeys(app, [{ path: `apps/${app}/a/b/c/d/e/f`, abilities: ["decrypt"] }])).toBe(true);
+    expect(openKeyAcceptsKeys(app, [{ path: `apps/${app}/a/b/c/d/e/f/g`, abilities: ["decrypt"] }])).toBe(false);
+    expect(openKeyAcceptsKeys(app, [{ path: `apps/${app}/${"a".repeat(64)}/${"b".repeat(64)}/${"c".repeat(64)}/${"d".repeat(64)}`, abilities: ["decrypt"] }])).toBe(false);
   });
 
-  it("is a plain static file: built from the public directory, not rewritten and not given another response", () => {
-    const config = resolvedConfig();
-    // Vite copies `public/` into the build unless publicDir is turned off or moved.
-    expect(config.publicDir).toBeUndefined();
-    const redirects = readFileSync(new URL("../public/_redirects", import.meta.url), "utf8");
-    const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
-    expect(redirects).not.toMatch(/\.well-known|openkey-app-keys|^\/\*/m);
-    expect(headers).not.toMatch(/openkey-app-keys/);
-    // Nothing in the page source reads the file: no sign-in, SDK call or manifest names it.
-    const source = readFileSync(new URL("../src/share/openkey-session.ts", import.meta.url), "utf8");
-    expect(source).not.toContain("openkey-app-keys");
-  });
+  it("is built into the output as a plain file: audited, byte-identical, with no redirect rule that matches it", async () => {
+    const out = mkdtempSync(join(tmpdir(), "app-keys-"));
+    outDirs.push(out);
+    await run(process.execPath, ["node_modules/vite/bin/vite.js", "build", "--outDir", out, "--emptyOutDir"], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
+    const built = readFileSync(join(out, ".well-known/openkey-app-keys.json"));
+    expect(built.equals(bytes)).toBe(true);
+    // No `_redirects` rule may match this path (a page rule like `/s/* /viewer/ 200` must not catch it).
+    const rules = readFileSync(join(out, "_redirects"), "utf8").split("\n").map((line) => line.trim()).filter((line) => line !== "" && !line.startsWith("#"));
+    const meeting = rules.filter((rule) => new RegExp(`^${(rule.split(/\s+/)[0] ?? "").replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test("/.well-known/openkey-app-keys.json"));
+    expect(meeting).toEqual([]);
+    // The same audit the deploy build runs on the output: no source map, an allowed file type, no key or token pattern, gitleaks clean.
+    await run(process.execPath, ["scripts/audit-dist.mjs", out], { cwd: ROOT });
+  }, 120_000);
 
   it("leaves Share's own published manifest and its digest input without any key declaration", () => {
     const plugin = (resolvedConfig().plugins ?? []).flat().find(
