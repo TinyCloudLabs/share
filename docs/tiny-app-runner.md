@@ -48,7 +48,7 @@ With no saved app session, the initial grant follows the current published versi
 
 3. **The pin**: hash every code file under `app/` (everything the catalog lists for the installed digest, except `knowledge/` and `manifest.json`; `install.json` is the install record) and compare with the catalog's sha256. A differing, missing or extra file is refused with the "This app's code doesn't match the pinned version" screen, which offers Repair. `knowledge/` stays the person's and is never hashed. `manifest.json` is not pinned: it is the person's to narrow, and the next step decides what it may ask for.
 4. Re-validate the saved manifest with the SDK's `validateManifest`, then compare the SDK's own composed ReCap resources of both (`composeManifestRequest`). Every `(service, space, action, path)` of the saved manifest must be covered by one of the catalog's: same service and space, the action in the covering grant's actions, and the path equal, under a covering "/"-ending prefix, or covered by an empty path. Narrowing (fewer actions, longer paths, fewer grants) passes; anything wider is "This app asks for more than it did when you installed it". The first difference is shown.
-5. Also refused: a delegation target (`did`), `secrets`, a space other than `applications`, a service other than key-value and SQL, a custom folder prefix, a path with `..` or an empty segment. `includePublicSpace` is forced off and `expiry` to `1h`.
+5. Also refused: a delegation target (`did`), `secrets`, a space other than `applications`, a service outside key-value, SQL or the one sealing key, a custom folder prefix, a path with `..` or an empty segment. `includePublicSpace` is forced off and `expiry` to `1h`.
 6. The bridge's allow-list is `makeAuthorizer` on the capped copy (`capGrants(saved, catalog).signing`). The frame's calls are checked against that list, not against the session.
 
 ### No signer escalation
@@ -100,6 +100,8 @@ Nothing about the session, its keys, the owner, the node or any URL is in any fr
 | `kv.del(key)` | `{key}` | `{ok}` |
 | `sql.query(db, text, params = [])` | `{db, sql, params}` | `{ok, columns, rows, rowCount}` |
 | `sql.execute(db, text, params = [])` | `{db, sql, params}` | `{ok, changes, lastInsertRowId}` |
+| `seal.encrypt(value, context)` | `{value, context}` with a JSON value and the full record key | `{ok, sealed}` with an opaque string |
+| `seal.decrypt(sealed, context)` | `{sealed, context}` with the returned string and the same record key | `{ok, value}` with the original JSON |
 | `file.save(name, body, opts?)` | `{name, body, type?}`; body is a string or Uint8Array | `{ok}` once the offer is showing (see below) |
 
 Every call resolves `{ok: true, …}` or `{ok: false, error: {code, message}}`; the bridge never
@@ -129,6 +131,30 @@ throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FA
   back before retrying a write. A call that timed out keeps its slot until it settles or 60 s pass.
 - A frame message from the page's own window, another origin or a stranger frame, a wrong nonce, `v≠1`, an
   unknown type, extra keys or a repeated id is dropped without a reply.
+
+### Encrypting app data
+
+An app can use one key set aside for it on the owner's default encryption network. The catalog
+manifest declares `keys_app_id: "xyz.tinycloud.share"` and one `keys` entry with
+`path: "apps/xyz.tinycloud.share/<app_id>/seal-v1"` and `abilities: ["decrypt", "key.create"]`.
+The runner shows this permission before sign-in. It asks for the key with the app's other grants
+and the usual renewal option. A reopen uses an already approved key when the session holds it.
+
+Import `seal` from `@tinycloud/app`. Use `seal.encrypt(value, context)` to encrypt a JSON
+value and store the returned `sealed` string with the app's data. Use
+`seal.decrypt(sealed, context)` to open it. Use the full record key as `context`, including the
+app id and no leading slash. The key can be up to 512 characters. An encrypted value opens
+only for the same record key, owner and space.
+
+Share chooses the encryption key from the installed manifest and keeps its key material
+outside the app. The saved manifest and the approved session must both allow the same key.
+The app can encrypt up to 256 KiB of UTF-8 JSON and open an encrypted string up to 384 KiB.
+The seal request and reply allow up to 16 levels of nested data, including the message fields.
+
+Sealing keeps the value confidential and binds it to its record. Use separate evidence to
+verify who wrote it. Anyone who can encrypt to the key and write that record can make a
+sealed value for it. A reader outside the runner must calculate the expected owner, space and
+record context independently and verify the matching header inside the decrypted value.
 
 ### Saving a file: `file.save`
 

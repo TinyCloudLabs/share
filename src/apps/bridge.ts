@@ -19,7 +19,7 @@
  * path in the space and is allowed only where a `skipPrefix` grant of the manifest
  * covers it (the Recipes sample reads the Health Log database that way). The frame
  * cannot name a service, a space, a delegation or another session: the only things
- * it can say are the seven operations below: six for data and one that offers a file to save.
+ * it can say are the operations below. Sealing always uses the one key chosen by the host.
  *
  * `sql.execute` is limited to the app's OWN databases (a relative `db`), whatever the
  * manifest says: TC-1581 (the node lets a write ability run DDL) is not something
@@ -29,8 +29,10 @@
  *
  * Nothing here throws into the frame: every path resolves to a result.
  */
-import { CAP_ID_PATTERN, CAP_LIMITS, CAP_OPS, CAP_TYPE_PREFIX, CAP_MAX_ERROR_CHARS, capError, type CapError, type CapErrorCode, type CapOp, type CapResult } from "../artifact/jsx-runtime/cap-protocol.js";
+import { CAP_ID_PATTERN, CAP_LIMITS, CAP_OPS, CAP_SEAL_MAX_DEPTH, CAP_TYPE_PREFIX, CAP_MAX_ERROR_CHARS, capError, type CapError, type CapErrorCode, type CapOp, type CapResult } from "../artifact/jsx-runtime/cap-protocol.js";
 import type { Authorizer, BridgeAction } from "./grants.ts";
+import type { NamedKeyEnvelope } from "@tinycloud/node-sdk/encryption-keys";
+import type { BoundSeal } from "./seal.ts";
 import { classifySql } from "./sql-class.ts";
 import { checkSaveFile, type SaveFile } from "./save-file.ts";
 
@@ -64,6 +66,8 @@ export interface BridgeOptions {
   readonly appId: string;
   readonly authorize: Authorizer;
   readonly data: AppData;
+  /** Bound to the installed app's exact key and approved session by the runner. */
+  readonly seal?: BoundSeal;
   /** Sends `cap/result` for a request id to the frame. */
   readonly reply: (id: string, result: CapResult) => void;
   /** False once the runtime session has ended: every call then answers NOT_CONNECTED. */
@@ -136,6 +140,8 @@ const KEYS: Record<CapOp, readonly string[]> = {
   "kv.del": ["key"],
   "sql.query": ["db", "sql", "params"],
   "sql.execute": ["db", "sql", "params"],
+  "seal.encrypt": ["value", "context"],
+  "seal.decrypt": ["sealed", "context"],
   "file.save": ["name", "type", "body"],
 };
 
@@ -168,6 +174,20 @@ function mapError(error: { readonly code?: string | undefined; readonly message?
   if (code.startsWith("SQL_") || /SQL/.test(code)) return fail("SQL_ERROR", typeof error.message === "string" && error.message !== "" ? error.message : "The statement failed.");
   return fail("INTERNAL", "The request failed.");
 }
+
+/** SDK error codes travel through the fixed bridge messages. SDK text stays in the host. */
+function sealFailure(error: unknown): CapError {
+  if (typeof error === "object" && error !== null) {
+    const code = Reflect.get(error, "code");
+    if (code === "INVALID_ENVELOPE") return fail("BAD_REQUEST", "The encrypted value could not be read.");
+    if (typeof code === "string") return mapError({ code });
+  }
+  return fail("INTERNAL", "The call failed.");
+}
+
+export const MAX_SEAL_JSON_BYTES = 256 * 1024;
+export const MAX_SEAL_ENVELOPE_BYTES = 384 * 1024;
+export const MAX_SEAL_CONTEXT_CHARS = 512;
 
 const CONTROL = /[\u0000-\u001f\u007f\\]/;
 
@@ -269,6 +289,80 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       } };
   }
 
+  function prepareSeal(op: "seal.encrypt" | "seal.decrypt", args: Record<string, unknown>): Prepared | CapError {
+    const seal = options.seal;
+    if (seal === undefined) return fail("PERMISSION_DENIED", "This app needs permission to use its sealing key.");
+    const context = args["context"];
+    if (typeof context !== "string") return fail("BAD_REQUEST", "Give the app the full record key.");
+    if (context.length > MAX_SEAL_CONTEXT_CHARS) return fail("TOO_LARGE", "The record key is too long.");
+    if (!context.startsWith(root) || /[^a-zA-Z0-9/._~:+@=,-]/.test(context) || checkedPath(context, false) === undefined) {
+      return fail("BAD_REQUEST", "Give the app a valid record key in its own folder.");
+    }
+    const header = JSON.stringify(["tinycloud.app.seal/v1", seal.ownerDid, seal.spaceId, context]);
+    const aad = new TextEncoder().encode(header);
+    const expected = btoa(String.fromCharCode(...aad));
+    if (op === "seal.encrypt") {
+      let json: string;
+      try {
+        json = JSON.stringify(args["value"], (_key, value: unknown) => {
+          if (value === null || typeof value === "string" || typeof value === "boolean" ||
+              (typeof value === "number" && Number.isFinite(value)) || Array.isArray(value) || isPlainObject(value)) return value;
+          throw new TypeError("not JSON");
+        });
+      } catch {
+        return fail("BAD_REQUEST", "Give the app a JSON value to encrypt.");
+      }
+      if (utf8Length(json) > MAX_SEAL_JSON_BYTES) return fail("TOO_LARGE", "The value is too large to encrypt.");
+      return { run: async () => {
+        let envelope: NamedKeyEnvelope;
+        try {
+          // Verify the context from inside the encrypted payload before returning any value.
+          envelope = await seal.encrypt(new TextEncoder().encode(`${header}\n${json}`), aad);
+        } catch (error) {
+          return sealFailure(error);
+        }
+        if (envelope.v !== 2 || envelope.keyPath !== seal.keyPath || envelope.networkId !== seal.networkId || envelope.aad !== expected) {
+          return fail("INTERNAL", "The value could not be encrypted.");
+        }
+        const sealed = JSON.stringify(envelope);
+        return utf8Length(sealed) > MAX_SEAL_ENVELOPE_BYTES ? fail("TOO_LARGE", "The encrypted value is too large.") : { ok: true, sealed };
+      } };
+    }
+
+    const sealed = args["sealed"];
+    if (typeof sealed !== "string") return fail("BAD_REQUEST", "Give the app an encrypted string to open.");
+    if (utf8Length(sealed) > MAX_SEAL_ENVELOPE_BYTES) return fail("TOO_LARGE", "The encrypted value is too large.");
+    let envelope: unknown;
+    try { envelope = JSON.parse(sealed); } catch { return fail("BAD_REQUEST", "The encrypted value could not be read."); }
+    if (!isPlainObject(envelope) || envelope["v"] !== 2 ||
+        typeof envelope["keyPath"] !== "string" || typeof envelope["networkId"] !== "string") {
+      return fail("BAD_REQUEST", "The encrypted value could not be read.");
+    }
+    if (envelope["keyPath"] !== seal.keyPath || envelope["networkId"] !== seal.networkId) {
+      return fail("PERMISSION_DENIED", "This app can open data encrypted with its own key.");
+    }
+    if (envelope["aad"] !== expected) {
+      return fail("CONTEXT_MISMATCH", "The encrypted value was made for a different record.");
+    }
+    const named = envelope as unknown as NamedKeyEnvelope; // The SDK validates the encrypted fields.
+    return { run: async () => {
+      let bytes: Uint8Array;
+      try {
+        bytes = await seal.decrypt(named);
+      } catch (error) {
+        return sealFailure(error);
+      }
+      if (bytes.byteLength > MAX_SEAL_JSON_BYTES + aad.byteLength + 1) return fail("TOO_LARGE", "The encrypted value is too large to open.");
+      try {
+        const plaintext = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+        if (!plaintext.startsWith(`${header}\n`)) return fail("CONTEXT_MISMATCH", "The encrypted value was made for a different record.");
+        return { ok: true, value: JSON.parse(plaintext.slice(header.length + 1)) as unknown };
+      } catch {
+        return fail("BAD_REQUEST", "The encrypted value does not contain JSON.");
+      }
+    } };
+  }
+
   /** `file.save`: checks the file, then hands it to the runner to show the owner. Nothing is written anywhere; no manifest grant is involved. */
   function prepareFile(args: Record<string, unknown>): Prepared | CapError {
     const offers = options.files;
@@ -283,7 +377,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
     try { options.reply(id, result); } catch { /* the frame is gone */ }
   }
 
-  function start(id: string, prepared: Prepared): void {
+  function start(id: string, prepared: Prepared, maxDepth: number): void {
     held.add(id);
     let replied = false;
     let released = false;
@@ -292,7 +386,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       replied = true;
       clearTimeout(soft);
       // A result that would not fit in a message is refused here, not truncated.
-      const size = dataSize(result, limits.maxMessageBytes);
+      const size = dataSize(result, limits.maxMessageBytes, maxDepth);
       safeReply(id, size === null ? fail("INTERNAL", "The answer could not be sent.") : size > limits.maxMessageBytes ? fail("TOO_LARGE", `The answer is larger than ${limits.maxMessageBytes} bytes: ask for less (for SQL, use LIMIT).`) : result);
     };
     const release = (): void => {
@@ -324,15 +418,20 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
         if (!OPS.includes(op)) { safeReply(id, fail("BAD_REQUEST", "Unknown call.")); return; }
         const args = body["args"];
         if (!isPlainObject(args)) { safeReply(id, fail("BAD_REQUEST", "The call's arguments must be a plain object.")); return; }
-        const size = dataSize(args, limits.maxMessageBytes);
+        const sealing = op === "seal.encrypt" || op === "seal.decrypt";
+        const maxDepth = sealing ? CAP_SEAL_MAX_DEPTH : CAP_LIMITS.maxDepth;
+        const size = dataSize(args, limits.maxMessageBytes, maxDepth);
         if (size === null) { safeReply(id, fail("BAD_REQUEST", "The call's arguments must be plain data.")); return; }
         if (size > limits.maxMessageBytes) { safeReply(id, fail("TOO_LARGE", `The call is larger than ${limits.maxMessageBytes} bytes.`)); return; }
         if (options.isLive?.() === false) { safeReply(id, fail("NOT_CONNECTED", "Your session expired: open the app again.")); return; }
         if (held.size >= limits.maxInFlight) { safeReply(id, fail("BUSY", `More than ${limits.maxInFlight} calls in flight.`)); return; }
         const allowed = KEYS[op as CapOp];
         if (Object.keys(args).some((key) => !allowed.includes(key))) { safeReply(id, fail("BAD_REQUEST", `Unexpected argument for ${op}.`)); return; }
-        const prepared = op === "file.save" ? prepareFile(args) : op.startsWith("kv.") ? prepareKv(op as Extract<CapOp, `kv.${string}`>, args) : prepareSql(op as "sql.query" | "sql.execute", args);
-        if ("run" in prepared) start(id, prepared); else safeReply(id, prepared);
+        const prepared = op === "file.save" ? prepareFile(args)
+          : op === "seal.encrypt" || op === "seal.decrypt" ? prepareSeal(op, args)
+          : op.startsWith("kv.") ? prepareKv(op as Extract<CapOp, `kv.${string}`>, args)
+          : prepareSql(op as "sql.query" | "sql.execute", args);
+        if ("run" in prepared) start(id, prepared, maxDepth); else safeReply(id, prepared);
       } catch {
         if (id !== undefined) safeReply(id, fail("INTERNAL", "The call failed."));
       }

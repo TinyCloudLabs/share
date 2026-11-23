@@ -20,6 +20,7 @@ import { consentFor } from "./consent.ts";
 import { createCapabilityBridge, type CapabilityBridge } from "./bridge.ts";
 import { createFileOffers, type SaveWith } from "./file-offer.ts";
 import { type RunFailure, type RunPorts, type RunProgress, type RunningApp, RunError, openApp, catalogEntryFor, APP_ID } from "./run.ts";
+import { runnerSealingKey } from "./seal-key.ts";
 import { createRunPorts } from "./run-session.ts";
 import { accessSection, el, noticeList } from "./view.ts";
 import { firstOpenLines } from "./first-open.ts";
@@ -350,10 +351,13 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     access.open = false;
     signOut.disabled = false;
     let reply: JsxCapabilityReply | undefined;
+    const keyPath = runnerSealingKey(result.app.signing);
+    const seal = typeof keyPath === "string" ? result.session.sealFor?.(keyPath) : undefined;
     bridge = createCapabilityBridge({
       appId: result.app.appId,
       authorize: result.app.authorize,
       data: result.session.data,
+      ...(seal === undefined ? {} : { seal }),
       reply: (id, answer) => reply?.(id, answer),
       isLive: () => live && now() < result.session.expiresAt,
       files: offers,
