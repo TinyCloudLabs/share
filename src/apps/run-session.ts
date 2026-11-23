@@ -77,6 +77,39 @@ export async function runnerSessionPrefix(appId: string): Promise<string> {
 }
 
 /**
+ * Clears the Web SDK's own kept-grants entry under `sessionPrefix` via the public
+ * `BrowserSessionStorage.saveRuntimeGrants(address, [])` API (never guessing key names).
+ * Runner prefixes are keyed by `app_id` only, whereas Share's `runtime-grants.ts` binds
+ * restored grants to the installed bundle digest; keeping SDK-stored grants would let an
+ * updated bundle inherit an older version's kv/sql permissions across reloads.
+ */
+async function clearSdkKeptRuntimeGrants(sessionPrefix: string, address?: string): Promise<void> {
+  const webSdk = await import("@tinycloud/web-sdk");
+  const StorageCtor = Object.prototype.hasOwnProperty.call(webSdk, "BrowserSessionStorage") ? webSdk.BrowserSessionStorage : undefined;
+  if (typeof StorageCtor !== "function") return;
+  const storage = new StorageCtor({ keyPrefix: sessionPrefix });
+  if (typeof storage.saveRuntimeGrants !== "function") return;
+  const addresses = new Set<string>();
+  if (address !== undefined) addresses.add(address);
+  const active = storage.activeAddress();
+  if (active !== undefined) addresses.add(active);
+  try {
+    const store = globalThis.localStorage;
+    if (store !== undefined) {
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (key === null || !key.startsWith(sessionPrefix)) continue;
+        const suffix = key.slice(sessionPrefix.length);
+        if (/^0x[0-9a-f]{40}$/i.test(suffix)) addresses.add(suffix);
+      }
+    }
+  } catch {
+    // Storage enumeration may be blocked; activeAddress and explicit address above still run.
+  }
+  for (const target of addresses) await storage.saveRuntimeGrants(target, []);
+}
+
+/**
  * Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. The runner's
  * authorization is interactive (a first open can spend minutes in OpenKey's modal), so a signature waits as long as a
  * connect does, five minutes, not the 60 s a revocation request lives.
@@ -282,6 +315,9 @@ export function createRunPorts(): RunPorts {
       const approvals = approvalGuard(hooks);
       let client: TinyCloudWeb | undefined;
       const sessionPrefix = await runnerSessionPrefix(entry.app_id);
+      // Drop any SDK-kept grants before TinyCloudWeb restores the session on load so
+      // only Share's digest-bound runtime-grants store can restore kv/sql permissions.
+      await clearSdkKeptRuntimeGrants(sessionPrefix);
       const openSession = async (): Promise<ManifestSignIn> => {
         try {
           return await openkey.signInWithManifest({
@@ -327,6 +363,7 @@ export function createRunPorts(): RunPorts {
           if (uncovered.length > 0) {
             installSafePermissionDialog(tinycloud, signedIn.preparePermissionRequest);
             const result = await tinycloud.requestPermissions(uncovered, { expiryMs: RUNTIME_SESSION_MS });
+            await clearSdkKeptRuntimeGrants(sessionPrefix, tinycloud.address());
             if (!result.approved) throw new RunError("cancelled", { detail: "permission-declined" });
             const delegations = result.delegations ?? tinycloud.getRuntimePermissionDelegations(uncovered);
             const ownerAddress = tinycloud.address();
