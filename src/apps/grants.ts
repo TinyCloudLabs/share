@@ -17,7 +17,7 @@
  *
  * Narrowing (fewer actions, a longer path, fewer grants) always passes. A path
  * with a ".." or empty segment, a delegation target, secrets, a space other than
- * `applications`, a service other than kv/sql, a custom folder prefix and a public
+ * `applications`, a grant outside kv, sql or the app’s one sealing key, a custom folder prefix and a public
  * space are refused or removed before anything is signed, so the sign-in the runner
  * asks for contains nothing the bridge cannot use.
  */
@@ -26,6 +26,7 @@ import type { ComposedManifestRequest, Manifest, ResolvedCapabilities, ResourceC
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { REGISTRY_RESOURCES } from "./install-plan.ts";
 import { possessive } from "./possessive.ts";
+import { runnerSealingKey } from "./seal-key.ts";
 
 /** The SDK functions the rule needs. `import("@tinycloud/sdk-core")` satisfies it. */
 export interface ManifestSdk {
@@ -83,6 +84,10 @@ export function capGrants(stored: Manifest, catalog: Manifest, sdk: ManifestSdk)
   const refuse = (reason: GrantRefusal["reason"], detail: string): { ok: false; refusal: GrantRefusal } => ({ ok: false, refusal: { reason, detail } });
   try {
     if (stored.app_id !== catalog.app_id) return refuse("invalid", "the manifest names a different app");
+    const ownKey = runnerSealingKey(stored);
+    const catalogKey = runnerSealingKey(catalog);
+    if (ownKey === null || catalogKey === null) return refuse("unsupported", "the manifest must declare one exact sealing key for this app");
+    if (ownKey !== undefined && ownKey !== catalogKey) return refuse("widened", "the catalog did not grant this sealing key");
     if (stored.did !== undefined) return refuse("unsupported", "the manifest delegates to another party");
     if (stored.secrets !== undefined && Object.keys(stored.secrets).length > 0) return refuse("unsupported", "the manifest asks for secrets");
     if (stored.prefix !== undefined && stored.prefix !== stored.app_id) return refuse("unsupported", "the manifest changes the app's folder");
@@ -123,7 +128,14 @@ export function runtimeScope(catalog: Manifest, sdk: Pick<ManifestSdk, "resolveM
   const own = sdk.resolveManifest(catalog).resources.filter((grant) => grant.space === APP_SPACE && (grant.service === "tinycloud.kv" || grant.service === "tinycloud.sql"));
   const actions = [...new Set(own.flatMap((grant) => grant.actions.map((action) => action.slice(action.lastIndexOf("/") + 1))))];
   const prefixes = [...new Set(own.map((grant) => grant.path))].filter((path) => path !== "");
-  return { allowedSpaces: [APP_SPACE], allowedServices: ["kv", "sql"], allowedActions: actions, allowedPathPrefixes: prefixes.map((prefix) => ({ space: APP_SPACE, prefix })) };
+  const key = runnerSealingKey(catalog);
+  return {
+    allowedSpaces: [APP_SPACE],
+    allowedServices: ["kv", "sql"],
+    allowedActions: actions,
+    allowedPathPrefixes: prefixes.map((prefix) => ({ space: APP_SPACE, prefix })),
+    ...(typeof key === "string" ? { allowedRunnerKeyPath: key } : {}),
+  };
 }
 
 /** One permission on one folder of the app's kv space: skipPrefix, so the folder itself is the grant. */

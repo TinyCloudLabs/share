@@ -390,51 +390,51 @@
       },
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-contacts",
-        "tag": "v0.1.0-pre.5",
-        "commit": "0ca8d79d63a3df5d6a38aea5f59fbb25d28f9e47"
+        "tag": null,
+        "commit": "3a388ca9844fd2a39694993e93fe1983d545015e"
       },
       "release": {
         "version": "0.1.0",
-        "digest": "af87715c7d46591f667bca38d81cd2d9c250b38e1ec584b45229702d1c5b0a99"
+        "digest": "6722e492e24efddfc33d7c07a123912d5d48626df57a170491373d174ff3d49f"
       },
       "manifest": {
         "path": "manifest.json",
-        "sha256": "b527f3b30c9d7e12d17d838457a7121f0e8c3be7e710d5a6abbb93b5f1ed90b1"
+        "sha256": "5ea1543e129eaec45c231fc520db277631c4f2dd8a1f2fde83dc1955337afc16"
       },
       "bundle": {
-        "root": "/apps/b/325c8f86f0546ffc973420ad42a980ed2c2a59d4ee1376193d0a8fa14da7019e/",
+        "root": "/apps/b/c346bd737321f78fea9ed019d93e3db16bf4100ff56561f6ba11e6c4f44adb58/",
         "files": [
           {
             "path": "app.jsx",
-            "sha256": "33af2faf80bc171a52de679e4c1093220bd832259c30797229cb7de1f097b560",
-            "size": 61785
+            "sha256": "18479434606703c2cadff1205e7709efcfc036556f2ac897e5ab6e879c440545",
+            "size": 81151
           },
           {
             "path": "copy.js",
-            "sha256": "bb43cff29d8241b6b337a37160cf1b9991bc24b7bc675fd954ab2b4427a830e9",
-            "size": 4235
+            "sha256": "6f73a6320ec9fef0e7fd4b3aefdd17950c4d9a8ee50bceb2e8a80c4f593e1103",
+            "size": 5467
           },
           {
             "path": "knowledge/index.md",
-            "sha256": "e47799cc1739e8ae275064647603e58d502840a47e27b8d788a5829f074c38fc",
-            "size": 10997
+            "sha256": "00fe1eb68132d4d0ba858470cb11ea9e4633fb058e6d13929e3a1b0fdb07dbe0",
+            "size": 1517
           },
           {
             "path": "manifest.json",
-            "sha256": "b527f3b30c9d7e12d17d838457a7121f0e8c3be7e710d5a6abbb93b5f1ed90b1",
-            "size": 2143
+            "sha256": "5ea1543e129eaec45c231fc520db277631c4f2dd8a1f2fde83dc1955337afc16",
+            "size": 2339
           },
           {
             "path": "release.json",
-            "sha256": "b60c0b35bd173ca6227dbc78e4fdd96cec5a33e1677b02aba4cf82a76670ec32",
-            "size": 792
+            "sha256": "f6a0339e863c02b17579c74baf5540ced56b1774379256271511e7d1dafa97d4",
+            "size": 791
           }
         ],
-        "digest": "325c8f86f0546ffc973420ad42a980ed2c2a59d4ee1376193d0a8fa14da7019e"
+        "digest": "c346bd737321f78fea9ed019d93e3db16bf4100ff56561f6ba11e6c4f44adb58"
       },
       "knowledge": {
-        "root": "/apps/b/325c8f86f0546ffc973420ad42a980ed2c2a59d4ee1376193d0a8fa14da7019e/knowledge/",
-        "digest": "1395a7046ef5effaaadc58d85114edadbab6f9c16cce075cec7f7c998236c77e"
+        "root": "/apps/b/c346bd737321f78fea9ed019d93e3db16bf4100ff56561f6ba11e6c4f44adb58/knowledge/",
+        "digest": "62be4f01e9503833affda58220f0d967964b7c1e9720957599c56a3bfb6e81db"
       }
     }
   ]

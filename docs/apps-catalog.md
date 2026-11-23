@@ -97,6 +97,12 @@ The lists mirror what the SDK's `resolveManifest` would sign, and only that
 
 The kit's descriptive `resources.*` blocks grant nothing in the SDK, so they are not listed.
 
+An app that encrypts its data declares one exact key set aside for that app. The catalog and
+runner show this permission before sign-in. Share includes it with the app's other permissions
+and lets the app encrypt and open data with that key. The seal keeps data confidential and ties
+it to its record. Author checks use separate evidence. See [encrypting app data](tiny-app-runner.md#encrypting-app-data)
+for the manifest fields and bridge calls.
+
 `npm run test:e2e:apps-page` builds the site and checks the page and the details sheets in Chromium
 at 390 and 1440 px, light and dark, with axe (WCAG 2.x AA), the production headers, and
 screenshots (`APPS_SCREENSHOT_DIR`).
@@ -115,7 +121,7 @@ Each open runs these steps in order (`openApp` in `src/apps/run.ts`):
 4. **Save what is missing.** Each app file that is not in the person's TinyCloud is written create-only (`ifNoneMatch: "*"`), in catalog order. A file that is already there is kept as it is, and step 5 checks it before `install.json` is written. A file that appears between the read and its save stops the save ("saved files changed while opening"), and nothing more is written.
 5. **Write `install.json` after the app files.** `<app_id>/app/install.json` (`{ source, digest, installed_at }`) is written only when no record is saved and the saved code files pass the same check as the open: every code file present, no extra file, each with the catalog's sha256 and size. A failure stops the save with "`<reason>`, so install.json was not written". `manifest.json` is not pinned here; it is capped at verification (step 6). Notes are written after `install.json`, with `knowledge/index.md` last. A folder with `install.json` and every app file counts as installed; notes missing afterwards are written by the next open. The apps list is not used for that.
 6. **Verify the saved app.** The saved files are checked against the selected catalog version (`verifyStoredApp`), and the manifest is capped against that version's catalog manifest. A copy whose code files differ from the pins is refused on the "doesn't match the pinned version" screen, which offers Repair. A copy recorded for a digest that is not in the catalog is refused and shows the steps to remove its files. Nothing is upgraded silently.
-7. **Start the app on the same session.** The union session is not reopened for the app frame. It lasts one hour. The bridge allow-list comes only from the capped copy of the saved manifest (`makeAuthorizer`), never from the session.
+7. **Start the app on the same session.** The union session is not reopened for the app frame. It lasts one hour, and when the owner left automatic renewal on, reopening the app after that restores it through the lease with no approval (the sign-in asks for 90 days, standing). The bridge allow-list comes only from the capped copy of the saved manifest (`makeAuthorizer`), never from the session.
 
 ## Cancel, failure, and partial saves
 

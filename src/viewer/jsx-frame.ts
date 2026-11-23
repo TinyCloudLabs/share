@@ -48,7 +48,7 @@
  * Without a handler (the share viewer) the parent drops every one.
  */
 
-import { CAP_ID_PATTERN, CAP_LIMITS, CAP_RESULT_TYPE, CAP_TYPES, CAP_TYPE_PREFIX } from "../artifact/jsx-runtime/cap-protocol.js";
+import { CAP_ID_PATTERN, CAP_LIMITS, CAP_RESULT_TYPE, CAP_SEAL_MAX_DEPTH, CAP_TYPES, CAP_TYPE_PREFIX } from "../artifact/jsx-runtime/cap-protocol.js";
 import { SANDBOX_PERMISSIONS_POLICY } from "./sandbox-permissions.js";
 
 /** App-origin path of the bridge document (dev + build). */
@@ -295,6 +295,7 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   var CAP_MAX_BYTES = ${CAP_LIMITS.maxMessageBytes};
   var CAP_MAX_INFLIGHT = ${CAP_LIMITS.maxInFlight};
   var CAP_MAX_DEPTH = ${CAP_LIMITS.maxDepth};
+  var CAP_SEAL_DEPTH = ${CAP_SEAL_MAX_DEPTH};
   var CHILD_PREAMBLE = __CHILD_PREAMBLE__;
   var CHILD_BOOT = __CHILD_BOOT__;
   var TAILWIND_THEME = __TAILWIND_THEME__;
@@ -373,12 +374,12 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   // from its own child to its parent, and the parent's answers back; it decides nothing about what a call may touch.
   // capBytes: size of plain data in bytes (strings counted by length: the parent measures UTF-8 exactly),
   // -1 when it is not plain data or is nested too deeply, -2 when it is larger than the message cap.
-  function capBytes(value) {
+  function capBytes(value, maxDepth) {
     var total = 0;
     var nodes = 0;
     var tooBig = false;
     function walk(v, depth) {
-      if (depth > CAP_MAX_DEPTH) return false;
+      if (depth > maxDepth) return false;
       nodes += 1;
       if (nodes > CAP_MAX_BYTES / 8) { tooBig = true; return false; }
       var kind = typeof v;
@@ -416,24 +417,26 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   function capFromChild(data) {
     if (!rendered || CAP_TYPES.indexOf(data.type) < 0 || !exactKeys(data, ["v", "type", "id", "args"])) return;
     // Without a usable id there is nothing to answer, and a repeated id is a call already in flight.
-    if (typeof data.id !== "string" || !CAP_ID.test(data.id) || capPending[data.id] === true) return;
+    if (typeof data.id !== "string" || !CAP_ID.test(data.id) || capPending[data.id] !== undefined) return;
     if (!isPlain(data.args)) { capRefuse(data.id, "BAD_REQUEST", "The call's arguments must be a plain object."); return; }
-    var size = capBytes(data.args);
+    var maxDepth = data.type === "cap/seal.encrypt" || data.type === "cap/seal.decrypt" ? CAP_SEAL_DEPTH : CAP_MAX_DEPTH;
+    var size = capBytes(data.args, maxDepth);
     if (size === -2) { capRefuse(data.id, "TOO_LARGE", "The call is larger than " + CAP_MAX_BYTES + " bytes."); return; }
     if (size < 0) { capRefuse(data.id, "BAD_REQUEST", "The call's arguments must be plain data."); return; }
     if (capCount >= CAP_MAX_INFLIGHT) { capRefuse(data.id, "BUSY", "More than " + CAP_MAX_INFLIGHT + " calls in flight."); return; }
-    capPending[data.id] = true;
+    capPending[data.id] = maxDepth;
     capCount += 1;
     post({ type: data.type, body: { id: data.id, args: data.args } });
   }
   function capFromParent(data) {
     if (!isPlain(data) || data.v !== VERSION || data.nonce !== nonce || data.type !== CAP_RESULT) return;
     if (!exactKeys(data, ["v", "type", "nonce", "id", "result"])) return;
-    if (typeof data.id !== "string" || capPending[data.id] !== true) return;
+    if (typeof data.id !== "string" || capPending[data.id] === undefined) return;
     if (!isPlain(data.result) || typeof data.result.ok !== "boolean") return;
+    var maxDepth = capPending[data.id];
     delete capPending[data.id];
     capCount -= 1;
-    var size = capBytes(data.result);
+    var size = capBytes(data.result, maxDepth);
     if (size === -2) capRefuse(data.id, "TOO_LARGE", "The answer is larger than " + CAP_MAX_BYTES + " bytes: ask for less (for SQL, use LIMIT).");
     else if (size < 0) capRefuse(data.id, "INTERNAL", "The runner sent an answer this app could not read.");
     else capReply(data.id, data.result);

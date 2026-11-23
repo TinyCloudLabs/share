@@ -3,7 +3,7 @@ export const words = {
   purpose:
     'Keep the people you know, and what you learn about them, in one place.',
   privacy:
-    'Your contacts are kept in your own TinyCloud space. Apps can open them only with your approval.',
+    'Contacts keeps your cards in your TinyCloud space and encrypts their details.',
   people: 'People',
   search: 'Search people',
   add: 'Add person',
@@ -39,6 +39,7 @@ export const words = {
   includeMe: 'Include my card',
   exportNotice:
     'The export file is not protected. Anyone who has it can read it.',
+  exportSkipped: 'The export leaves out cards whose details couldn’t be opened.',
   saveFile: 'Save file',
   copyInstead: 'Copy the text instead',
   fileReady:
@@ -63,6 +64,19 @@ export const words = {
   profile: 'Profile',
   history: 'History',
   noHistory: 'No earlier versions yet.',
+  detailsNotEncrypted: 'Details not encrypted',
+  encryptDetails: 'Encrypt details',
+  reviewDetails: 'Check these unencrypted details before you encrypt them.',
+  checkedDetails: "I've checked these details",
+  finishEncryption: 'Finish encryption',
+  finishEncryptionHelp: "This confirms every card, note and earlier version is encrypted. After this, Contacts hides unencrypted details it finds, unless this confirmation is removed or replaced with an older copy.",
+  backupEncryption: 'Copies or backups made before you encrypted may hold unencrypted details.',
+  lockedHeading: 'Contacts is locked',
+  lockedBody: "The record that shows your contacts are encrypted went missing or was replaced with an older copy. Contacts hid your own card and won't start any changes or deletions. A change that was already being saved may finish.",
+  hiddenRecord: 'Hidden: not encrypted',
+  oneHiddenRecord: "Contacts hid 1 record with unencrypted details. It's kept as it is, not deleted.",
+  manyHiddenRecords: "Contacts hid {n} records with unencrypted details. They're kept as they are, not deleted.",
+  detailsUnavailable: 'These contact details couldn’t be opened.',
   noDetails: 'No details added yet.',
   restore: 'Restore this version',
   agent: 'Agent',

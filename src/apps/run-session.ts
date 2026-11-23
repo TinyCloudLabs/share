@@ -11,6 +11,7 @@ import type { CatalogEntry } from "./catalog.ts";
 import type { Manifest, PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
+import { clearRenewalReceipt, renewalReceiptRunning } from "../share/renewal-store.js";
 import { CONNECT_WINDOW_MS, withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
@@ -21,6 +22,7 @@ import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
 import { BundleRefusal, INSTALL_RECORD_PATH, fetchVerifiedBundle } from "./bundle.ts";
 import { loadManifest } from "./manifest.ts";
 import { parseInstallRecord, type StoredFiles } from "./stored-app.ts";
+import { bindSeal, type BoundSeal } from "./seal.ts";
 import { showRuntimePermissionDialog } from "./permission-dialog.ts";
 import { restoreRuntimeGrants, saveRuntimeGrants } from "./runtime-grants.ts";
 
@@ -86,7 +88,8 @@ export async function runnerSessionPrefix(appId: string): Promise<string> {
 async function clearSdkKeptRuntimeGrants(sessionPrefix: string, address?: string): Promise<void> {
   const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
   const storage = new BrowserSessionStorage({ keyPrefix: sessionPrefix });
-  const target = address ?? storage.activeAddress();
+  // Not `activeAddress()`: that drops the pointer of a session past its signed end, which a renewal lease still restores.
+  const target = address ?? storage.activeAddressForRenewal();
   if (target !== undefined) await storage.saveRuntimeGrants(target, []);
 }
 
@@ -268,7 +271,16 @@ export function createRunPorts(): RunPorts {
     async hasPersistedSession(appId): Promise<boolean> {
       const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
       const keyPrefix = await runnerSessionPrefix(appId);
-      return new BrowserSessionStorage({ keyPrefix }).activeAddress() !== undefined;
+      const storage = new BrowserSessionStorage({ keyPrefix });
+      // A saved session past its signed end with a running renewal lease is not the narrow reopen: it opens like a first open, with the
+      // app's full manifest and its disclosure, so a refused lease still ends in a sign-in that carries the app's own grant (and its renewal).
+      // `activeAddress()` would drop that session's pointer, so the lease candidate is looked at first.
+      const saved = storage.activeAddressForRenewal();
+      if (saved !== undefined && renewalReceiptRunning(keyPrefix, saved)) {
+        const candidate = await storage.loadRenewalCandidate(saved);
+        if (candidate.status === "renewal-candidate") return false;
+      }
+      return storage.activeAddress() !== undefined;
     },
     async prepare(entry): Promise<PreparedApp> {
       // Before the app's permissions are signed, every catalog file is fetched and checked against its pin, and the manifest is loaded and checked.
@@ -299,23 +311,26 @@ export function createRunPorts(): RunPorts {
       // Drop any SDK-kept grants before TinyCloudWeb restores the session on load so
       // only Share's digest-bound runtime-grants store can restore kv/sql permissions.
       await clearSdkKeptRuntimeGrants(sessionPrefix);
-      const openSession = async (): Promise<ManifestSignIn> => {
+      const openSession = async (requested: SignInPlan, name: string, restore = true): Promise<ManifestSignIn> => {
         try {
           return await openkey.signInWithManifest({
-            manifest: plan.manifest,
-            ...plan.scope,
+            manifest: requested.manifest,
+            ...requested.scope,
             config,
             includeAccountRegistryPermissions: false,
             autoCreateSpace: true,
             guardApproval: approvals.guard,
             onClient: (created) => { client = created; },
-            appName: runnerAppName("TinyCloud Share: ", entry.name),
+            appName: runnerAppName("TinyCloud Share: ", name),
             // The session is persisted under this app's own prefix: a reload while it still lives
             // (same owner, same origin, permissions still covered) restores it without a new
             // approval, and it can never stand in for another app's or another account's session.
-            restoreBeforeOpenKey: true,
+            restoreBeforeOpenKey: restore,
             sessionPrefix,
             persistSession: true,
+            // The narrow reopen asks for no renewal: its grant is only `install.json`, and the app's own grant comes after it.
+            versionedSignIn: requested.narrow !== true,
+            renewal: requested.narrow !== true,
             expiry: RUNTIME_SESSION_MS,
           });
         } catch (error) {
@@ -324,10 +339,9 @@ export function createRunPorts(): RunPorts {
           throw new RunError(reason ?? "failed", { cause: error, ...(detail === undefined ? {} : { detail }) });
         }
       };
-      const signedIn = await openSession();
-      const { tinycloud, detach, dispose } = signedIn;
-      const space = tinycloud.space(INSTALL_SPACE);
-      const kv = space.kv;
+      let signedIn = await openSession(plan, entry.name);
+      let space = signedIn.tinycloud.space(INSTALL_SPACE);
+      let boundSeal: BoundSeal | undefined;
       // The persisted grant is deliberately minimal on reopen; resolve install.json
       // first, then request only uncovered permissions for the saved version.
       const runtimeGrantKey = `${sessionPrefix}-runtime-grants`;
@@ -336,6 +350,22 @@ export function createRunPorts(): RunPorts {
         if (authorized) throw new RunError("failed", { detail: "the app grant was already resolved" });
         if (selectedPlan.manifest.app_id !== selectedEntry.app_id) throw new RunError("failed", { detail: "the app grant names a different app" });
         try {
+          const keyPath = selectedPlan.scope.allowedRunnerKeyPath;
+          if (keyPath !== undefined) {
+            const sealFor = (active: TinyCloudWeb) => bindSeal(keyPath, space.id, active.session(), () => active.keys);
+            boundSeal = await sealFor(signedIn.tinycloud);
+            if (boundSeal === undefined && plan.narrow === true) {
+              // The narrow sign-in reads the saved version. Only a full versioned
+              // approval for that version can add its named key and renew it.
+              const owner = signedIn.tinycloud.address();
+              await signedIn.dispose();
+              signedIn = await openSession(selectedPlan, selectedEntry.name, false);
+              if (owner !== signedIn.tinycloud.address()) throw new RunError("wrong-account");
+              space = signedIn.tinycloud.space(INSTALL_SPACE);
+              boundSeal = await sealFor(signedIn.tinycloud);
+            }
+          }
+          const { tinycloud } = signedIn;
           await restoreRuntimeGrants(tinycloud, runtimeGrantKey, selectedEntry.app_id, selectedEntry.bundle.digest);
           const permissions = sdk.resolveManifest(selectedPlan.manifest).resources
             .filter((resource) => resource.space === INSTALL_SPACE && (resource.service === "tinycloud.kv" || resource.service === "tinycloud.sql"))
@@ -357,29 +387,38 @@ export function createRunPorts(): RunPorts {
       };
       let files: StoredFiles;
       try {
-        files = await readSavedFiles(kv, `${entry.app_id}/app/`);
+        files = await readSavedFiles(space.kv, `${entry.app_id}/app/`);
       } catch (error) {
         approvals.lock();
-        await dispose();
+        await signedIn.dispose();
         throw error instanceof RunError ? error : new RunError("failed", { cause: error });
       }
       let ending: Promise<void> | undefined;
       const end: () => Promise<void> = () => {
-        ending ??= dispose();
+        // Ending the session forgets its lease too: a narrow reopen's dispose does not (it asked for no renewal), and a saved lease must not outlive a sign-out.
+        ending ??= signedIn.dispose().finally(() => clearRenewalReceipt(sessionPrefix));
         return ending;
       };
       let detaching: Promise<void> | undefined;
       const detachRuntime = (): Promise<void> => {
-        detaching ??= detach();
+        detaching ??= signedIn.detach();
         return detaching;
       };
+      const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
+      // The saved session's owner (the pointer is read without dropping it): whether its lease runs decides what the tab does at expiry.
+      const storage = new BrowserSessionStorage({ keyPrefix: sessionPrefix });
       return {
         files,
         authorize,
-        put: (key, bytes, contentType): Promise<PutResult> => putCreateOnly(kv, key, bytes, contentType),
+        put: (key, bytes, contentType): Promise<PutResult> => putCreateOnly(space.kv, key, bytes, contentType),
         runtime: {
-          data: createAppData(kv, tinycloud.sqlForSpace(space.id)),
-          expiresAt: signedIn.sessionExpiresAt - EXPIRY_MARGIN_MS,
+          get data() { return createAppData(space.kv, signedIn.tinycloud.sqlForSpace(space.id)); },
+          sealFor: (keyPath) => authorized && boundSeal?.keyPath === keyPath ? boundSeal : undefined,
+          get expiresAt() { return signedIn.sessionExpiresAt - EXPIRY_MARGIN_MS; },
+          get renewing() {
+            const savedOwner = storage.activeAddressForRenewal();
+            return savedOwner !== undefined && renewalReceiptRunning(sessionPrefix, savedOwner);
+          },
           end,
           detach: detachRuntime,
         },

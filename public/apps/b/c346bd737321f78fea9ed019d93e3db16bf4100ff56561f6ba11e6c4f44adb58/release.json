@@ -1,0 +1,28 @@
+{
+  "schema": "tinycloud.app-release/v1",
+  "app_id": "xyz.tinycloud.tinyapps.contacts",
+  "version": "0.1.0",
+  "files": [
+    {
+      "path": "app.jsx",
+      "sha256": "18479434606703c2cadff1205e7709efcfc036556f2ac897e5ab6e879c440545",
+      "size": 81151
+    },
+    {
+      "path": "copy.js",
+      "sha256": "6f73a6320ec9fef0e7fd4b3aefdd17950c4d9a8ee50bceb2e8a80c4f593e1103",
+      "size": 5467
+    },
+    {
+      "path": "knowledge/index.md",
+      "sha256": "00fe1eb68132d4d0ba858470cb11ea9e4633fb058e6d13929e3a1b0fdb07dbe0",
+      "size": 1517
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "5ea1543e129eaec45c231fc520db277631c4f2dd8a1f2fde83dc1955337afc16",
+      "size": 2339
+    }
+  ],
+  "digest": "6722e492e24efddfc33d7c07a123912d5d48626df57a170491373d174ff3d49f"
+}

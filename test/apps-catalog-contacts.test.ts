@@ -40,6 +40,10 @@ describe("Contacts in the apps catalog", () => {
       expect(manifest["includePublicSpace"]).toBe(false);
       expect(manifest["secrets"]).toBeUndefined();
       expect(manifest["prefix"] === undefined || manifest["prefix"] === APP_ID).toBe(true);
+      expect(manifest["keys_app_id"]).toBe("xyz.tinycloud.share");
+      expect(manifest["keys"]).toEqual([
+        { path: "apps/xyz.tinycloud.share/xyz.tinycloud.tinyapps.contacts/seal-v1", abilities: ["decrypt", "key.create"] },
+      ]);
       const permissions = manifest["permissions"] as Array<Record<string, unknown>>;
       // Every entry has these four fields and no others (no space, skipPrefix, did or other service-specific field).
       expect(permissions.map((permission) => Object.keys(permission).sort())).toEqual(REVIEWED_PERMISSIONS.map(() => ["actions", "description", "path", "service"]));

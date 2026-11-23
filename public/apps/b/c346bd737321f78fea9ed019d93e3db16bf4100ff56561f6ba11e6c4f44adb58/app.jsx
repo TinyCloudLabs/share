@@ -1,6 +1,6 @@
 // src/Contacts.jsx
 import React2, { useEffect, useState as useState2, useRef as useRef2 } from "react";
-import { kv } from "@tinycloud/app";
+import { kv, seal } from "@tinycloud/app";
 
 // contract/catalog.js
 var appId = "xyz.tinycloud.tinyapps.contacts";
@@ -8,7 +8,7 @@ var discoveryKey = "xyz.tinycloud.tinyapps.catalog/contacts/entry";
 var cardFields = {
   name: "text: display name, e.g. Ada Quill",
   added: "date: local day first added, e.g. 2026-10-06",
-  private: 'object: all other card details, e.g. {"tags":["choir"]}'
+  sealed: 'string: seals all other card details, e.g. {"tags":["choir"]} after opening'
 };
 var personField = "slug: person key ending or me for the owner, e.g. ada-quill-a17bc432";
 var kinds = {
@@ -17,12 +17,12 @@ var kinds = {
   note: ["A sourced profile entry about one person.", {
     person: personField,
     added: "date: day the note was added, e.g. 2026-10-07",
-    private: 'object: text and source (required for agents), optional topic label, learned date (defaults to added) and optional replaces (full earlier note key), e.g. {"label":"Voice","text":"Sings alto","source":"Ada Quill at choir rehearsal","learned":"2026-10-07"}'
+    sealed: 'string: seals text and source (required for agents), optional topic label, learned date (defaults to added) and optional replaces (full earlier note key), e.g. {"label":"Voice","text":"Sings alto","source":"Ada Quill at choir rehearsal","learned":"2026-10-07"}'
   }],
   history: ["The card saved before a change.", {
     person: personField,
     action: "text: create, update, restore or import, e.g. update",
-    private: 'object: prior holds the complete previous record or null for a new card, e.g. {"prior":null}'
+    sealed: 'string: seals the full prior card or its absence, e.g. {"prior":null} after opening'
   }]
 };
 function seedRecords(created, by) {
@@ -74,11 +74,11 @@ function json(value) {
     check(value === null || ["boolean", "string"].includes(typeof value) || Number.isFinite(value), "Expected JSON");
   }
 }
-function equal(a, b) {
+function sameJson(a, b) {
   if (a === b) return true;
   if (!(object(a) && object(b) || Array.isArray(a) && Array.isArray(b))) return false;
   const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && equal(a[k], b[k]));
+  return keys.length === Object.keys(b).length && keys.every((k) => Object.hasOwn(b, k) && sameJson(a[k], b[k]));
 }
 function containsSeed(value, seed) {
   if (!object(seed)) return value === seed;
@@ -99,7 +99,7 @@ function parseKey(key) {
   check(subject(person), "Invalid log subject");
   return { kind, person };
 }
-function card(record2) {
+function openedCard(record2) {
   envelope(record2);
   const d = record2.data;
   check(exact(d, ["name", "added", "private"]) && nonempty(d.name) && day(d.added) && object(d.private), "Invalid card fields");
@@ -107,15 +107,35 @@ function card(record2) {
 function envelope(record2) {
   check(exact(record2, ["v", "at", "data", "by"]) && record2.v === 1 && stamp(record2.at) && clients.includes(record2.by) && object(record2.data), "Invalid record envelope");
 }
-function validate({ key, value }) {
+function validate(row) {
+  const { key, value } = row;
+  const { kind, person } = parseKey(key);
+  if (kind === "catalog" || kind === "discovery") return validateOpened(row);
+  envelope(value);
+  const d = value.data;
+  if (kind === "person" || kind === "me") {
+    check(exact(d, ["name", "added", "sealed"]) && nonempty(d.name) && day(d.added), "Invalid card fields");
+  } else if (kind === "note") {
+    check(exact(d, ["person", "added", "sealed"]) && d.person === person && day(d.added), "Invalid note fields");
+  } else {
+    check(
+      exact(d, ["person", "action", "sealed"]) && d.person === person && actions.includes(d.action),
+      "Invalid history fields"
+    );
+  }
+  check(typeof d.sealed === "string", "Expected sealed details");
+  return true;
+}
+var actions = ["create", "update", "import", "restore"];
+function validateOpened({ key, value }) {
   const { kind, person } = parseKey(key);
   json(value);
   if (kind === "catalog" || kind === "discovery") {
     if (kind === "catalog") check(day(value.created) && clients.includes(value.by), "Invalid catalog attribution");
     const seed = seedRecords(value.created, value.by).find((row) => row.key === key);
-    check(kind === "discovery" ? equal(value, seed.value) : containsSeed(value, seed.value), "Unexpected seed fields or meanings");
+    check(kind === "discovery" ? sameJson(value, seed.value) : containsSeed(value, seed.value), "Unexpected seed fields or meanings");
   } else if (kind === "person" || kind === "me") {
-    card(value);
+    openedCard(value);
   } else {
     envelope(value);
     const d = value.data;
@@ -132,11 +152,11 @@ function validate({ key, value }) {
         );
       }
     } else {
-      check(exact(d, ["person", "action", "private"]) && exact(d.private, ["prior"]) && ["create", "update", "import", "restore"].includes(d.action), "Invalid history");
+      check(exact(d, ["person", "action", "private"]) && exact(d.private, ["prior"]) && actions.includes(d.action), "Invalid history");
       if (d.private.prior === null) check(["create", "import"].includes(d.action), "Missing prior card");
       else {
         check(d.action !== "create", "Create requires an absent card");
-        card(d.private.prior);
+        openedCard(d.private.prior);
       }
     }
   }
@@ -144,7 +164,7 @@ function validate({ key, value }) {
 }
 function record(key, data, at, by) {
   const row = { key, value: { v: 1, at, data, by } };
-  validate(row);
+  validateOpened(row);
   const copy = structuredClone(row);
   if (parseKey(key).kind === "note") copy.value.data.private.learned ??= data.added;
   return copy;
@@ -185,11 +205,11 @@ function currentNotes(rows) {
 function validateChange(current, writes) {
   check(Array.isArray(writes) && writes.length === 2 && parseKey(writes[0].key).kind === "history", "Write history first");
   const [history, next] = writes;
-  writes.forEach(validate);
+  writes.forEach(validateOpened);
   const target = parseKey(next.key);
   check(["person", "me"].includes(target.kind) && target.person === history.value.data.person, "Wrong card");
-  if (current !== null) validate({ key: next.key, value: current });
-  check(equal(history.value.data.private.prior, current) && next.value.at === history.value.at && next.value.by === history.value.by, "History must capture this change");
+  if (current !== null) validateOpened({ key: next.key, value: current });
+  check(sameJson(history.value.data.private.prior, current) && next.value.at === history.value.at && next.value.by === history.value.by, "History must capture this change");
   return true;
 }
 function change({ key, current, data, action, historyKey, at, by }) {
@@ -202,7 +222,7 @@ function change({ key, current, data, action, historyKey, at, by }) {
   return writes;
 }
 function restore(options, saved) {
-  validate(saved);
+  validateOpened(saved);
   check(parseKey(saved.key).kind === "history" && saved.value.data.person === parseKey(options.key).person && saved.value.data.private.prior !== null && options.current !== null, "Expected a prior version of this card");
   return change({ ...options, data: saved.value.data.private.prior.data, action: "restore" });
 }
@@ -211,7 +231,7 @@ function restore(options, saved) {
 var words = {
   title: "Contacts",
   purpose: "Keep the people you know, and what you learn about them, in one place.",
-  privacy: "Your contacts are kept in your own TinyCloud space. Apps can open them only with your approval.",
+  privacy: "Contacts keeps your cards in your TinyCloud space and encrypts their details.",
   people: "People",
   search: "Search people",
   add: "Add person",
@@ -245,6 +265,7 @@ var words = {
   done: "Done",
   includeMe: "Include my card",
   exportNotice: "The export file is not protected. Anyone who has it can read it.",
+  exportSkipped: "The export leaves out cards whose details couldn\u2019t be opened.",
   saveFile: "Save file",
   copyInstead: "Copy the text instead",
   fileReady: "The file is ready. Look for the Save button in the bar above the app.",
@@ -267,6 +288,19 @@ var words = {
   profile: "Profile",
   history: "History",
   noHistory: "No earlier versions yet.",
+  detailsNotEncrypted: "Details not encrypted",
+  encryptDetails: "Encrypt details",
+  reviewDetails: "Check these unencrypted details before you encrypt them.",
+  checkedDetails: "I've checked these details",
+  finishEncryption: "Finish encryption",
+  finishEncryptionHelp: "This confirms every card, note and earlier version is encrypted. After this, Contacts hides unencrypted details it finds, unless this confirmation is removed or replaced with an older copy.",
+  backupEncryption: "Copies or backups made before you encrypted may hold unencrypted details.",
+  lockedHeading: "Contacts is locked",
+  lockedBody: "The record that shows your contacts are encrypted went missing or was replaced with an older copy. Contacts hid your own card and won't start any changes or deletions. A change that was already being saved may finish.",
+  hiddenRecord: "Hidden: not encrypted",
+  oneHiddenRecord: "Contacts hid 1 record with unencrypted details. It's kept as it is, not deleted.",
+  manyHiddenRecords: "Contacts hid {n} records with unencrypted details. They're kept as they are, not deleted.",
+  detailsUnavailable: "These contact details couldn\u2019t be opened.",
   noDetails: "No details added yet.",
   restore: "Restore this version",
   agent: "Agent",
@@ -323,6 +357,43 @@ var words = {
   }
 };
 
+// src/sealed-record.js
+var meKey = appId + "/me/me";
+async function sealRecord(row, sealer) {
+  validateOpened(row);
+  const { key, value } = row;
+  if (["catalog", "discovery"].includes(parseKey(key).kind)) return row;
+  const { private: details, ...data } = value.data;
+  const payload = key === meKey && row.cutoff ? { ...details, sealedSince: row.cutoff.since, sealedCounter: row.cutoff.counter } : details;
+  const sealed = await sealer.seal(payload, key);
+  if (typeof sealed !== "string" || !sealed.trim())
+    throw new TypeError("Expected a sealed record");
+  const stored = { key, value: { ...value, data: { ...data, sealed } } };
+  validate(stored);
+  return stored;
+}
+async function openRecord(row, sealer, { rejectPlaintext = false } = {}) {
+  const { key, value } = row;
+  if (["catalog", "discovery"].includes(parseKey(key).kind)) return row;
+  if (Object.hasOwn(value.data, "private")) {
+    if (rejectPlaintext) return { refused: "plaintext-after-cutoff" };
+    return { ...row, notEncrypted: true };
+  }
+  const { sealed, ...data } = value.data;
+  let details = await sealer.open(sealed, key);
+  let cutoff;
+  if (key === meKey && details && (Object.hasOwn(details, "sealedSince") || Object.hasOwn(details, "sealedCounter"))) {
+    const { sealedSince, sealedCounter, ...rest } = details;
+    if (typeof sealedSince !== "string" || !Number.isFinite(Date.parse(sealedSince)) || !Number.isSafeInteger(sealedCounter) || sealedCounter < 1)
+      throw new TypeError("Invalid encryption cutoff");
+    cutoff = { since: sealedSince, counter: sealedCounter };
+    details = rest;
+  }
+  const opened = { key, value: { ...value, data: { ...data, private: details } } };
+  validateOpened(opened);
+  return cutoff ? { ...opened, cutoff } : opened;
+}
+
 // src/store.js
 var author = (by) => by === "owner" ? words.owner : words.agent + " \xB7 " + by;
 var errorText = (code) => words.errors[code] || words.errors.INTERNAL;
@@ -330,7 +401,7 @@ function people(rows, search = "") {
   return rows.filter(
     (row) => parseKey(row.key).kind === "person" && [
       row.value.data.name,
-      ...Object.values(row.value.data.private).flat(Infinity)
+      ...Object.values(row.value.data.private ?? {}).flat(Infinity)
     ].join(" ").toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   ).sort((a, b) => a.value.data.name.localeCompare(b.value.data.name));
 }
@@ -345,14 +416,23 @@ function localDay(d) {
   return [d.getFullYear(), d.getMonth() + 1, d.getDate()].map((x) => String(x).padStart(2, "0")).join("-");
 }
 var sendOnce = (call) => call();
-function contacts(kv2) {
-  const relative = (key) => key.slice(appId.length + 1);
+var maxSealedInputBytes = 256 * 1024;
+var relative = (key) => key.slice(appId.length + 1);
+async function putStoredRecord(kv2, row, options) {
+  validate(row);
+  return kv2.put(relative(row.key), JSON.stringify(row.value), options);
+}
+function contacts(kv2, sealer, cutoffCache) {
   const changedRows = /* @__PURE__ */ new Map();
   const localHistory = /* @__PURE__ */ new Map();
   const unreadable = /* @__PURE__ */ new Set();
+  const refused = /* @__PURE__ */ new Set();
+  let highestCounter = 0;
+  let ownUnavailable = false;
+  let rollback = false;
   const waiting = [];
   let active = 0;
-  async function read(call) {
+  async function callBridge(call) {
     if (active === 3) await new Promise((resolve) => waiting.push(resolve));
     else active++;
     try {
@@ -363,17 +443,102 @@ function contacts(kv2) {
       else active--;
     }
   }
-  async function get(key, tolerant = false, send = sendOnce) {
-    const reply = await send(() => read(() => kv2.get(relative(key))));
+  async function fetch(key, send) {
+    const reply = await send(() => callBridge(() => kv2.get(relative(key))));
     if (!reply.ok && reply.error.code === "NOT_FOUND") return null;
-    const { bytes } = result(reply);
+    return result(reply).bytes;
+  }
+  function decode(key, bytes) {
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    const row = { key, value };
+    const { kind } = parseKey(key);
+    if (["person", "me", "note", "history"].includes(kind) && Object.hasOwn(value?.data ?? {}, "private"))
+      validateOpened(row);
+    else validate(row);
+    return row;
+  }
+  async function storedRow(key, send) {
+    const bytes = await fetch(key, send);
+    return bytes === null ? null : decode(key, bytes);
+  }
+  function hidesPlaintext() {
+    return highestCounter > 0 || ownUnavailable;
+  }
+  function assertWritable() {
+    if (rollback) fail("PRECONDITION_FAILED");
+  }
+  async function rememberCutoff(counter) {
+    if (counter <= highestCounter) return;
+    highestCounter = counter;
+    await cutoffCache?.write(counter);
+  }
+  async function readCutoff(send = sendOnce) {
+    const cached = await cutoffCache?.read();
+    if (Number.isSafeInteger(cached)) highestCounter = Math.max(highestCounter, cached);
+    const bytes = await fetch(meKey, send);
+    let stored, opened, unavailable;
+    if (bytes !== null) {
+      try {
+        stored = decode(meKey, bytes);
+        opened = await callBridge(() => openRecord(stored, sealer, {
+          rejectPlaintext: highestCounter > 0
+        }));
+        unreadable.delete(meKey);
+      } catch {
+        if (stored) {
+          const { name, added } = stored.value.data;
+          unavailable = {
+            key: meKey,
+            value: { ...stored.value, data: { name, added } },
+            unavailable: true
+          };
+        } else unreadable.add(meKey);
+      }
+    }
+    const marker = opened?.cutoff;
+    if (highestCounter > (marker?.counter ?? 0)) rollback = true;
+    if (marker) await rememberCutoff(marker.counter);
+    ownUnavailable = rollback || bytes !== null && !opened;
+    if (opened?.refused) refused.add(meKey);
+    else refused.delete(meKey);
+    if (rollback) return { stored };
+    const row = opened ? {
+      key: meKey,
+      value: opened.value,
+      ...opened.notEncrypted && { notEncrypted: true }
+    } : unavailable;
+    return { stored, row, marker };
+  }
+  async function get(key, tolerant = false, send = sendOnce) {
+    const bytes = await fetch(key, send);
+    if (bytes === null) {
+      refused.delete(key);
+      return null;
+    }
+    let stored;
     try {
-      const value = JSON.parse(new TextDecoder().decode(bytes));
-      validate({ key, value });
+      stored = decode(key, bytes);
+      const opened = await callBridge(() => openRecord(stored, sealer, {
+        rejectPlaintext: hidesPlaintext()
+      }));
       unreadable.delete(key);
-      return value;
+      if (opened.refused) {
+        refused.add(key);
+        return void 0;
+      }
+      refused.delete(key);
+      return opened;
     } catch (error) {
       if (!tolerant) throw error;
+      const kind = parseKey(key).kind;
+      if (stored && (kind === "person" || kind === "me")) {
+        const { name, added } = stored.value.data;
+        return {
+          key,
+          value: { ...stored.value, data: { name, added } },
+          unavailable: true
+        };
+      }
       unreadable.add(key);
       return void 0;
     }
@@ -381,20 +546,23 @@ function contacts(kv2) {
   async function put(row, create, send = sendOnce) {
     const opts = { contentType: "application/json" };
     if (create) opts.ifNoneMatch = true;
-    const body = JSON.stringify(row.value);
-    const reply = await send(() => kv2.put(relative(row.key), body, opts));
+    const reply = await send(
+      () => callBridge(() => {
+        assertWritable();
+        return putStoredRecord(kv2, row, opts);
+      })
+    );
     if (!reply.ok && reply.error.code !== "TIMEOUT") result(reply);
-    const actual = await get(row.key, false, send);
-    if (JSON.stringify(actual) !== JSON.stringify(row.value))
+    const actual = await storedRow(row.key, send);
+    if (JSON.stringify(actual) !== JSON.stringify(row))
       fail(reply.ok ? "PRECONDITION_FAILED" : "TIMEOUT");
-    const kind = parseKey(row.key).kind;
-    if (kind !== "catalog") {
-      changedRows.set(row.key, row);
-      if (kind === "history") localHistory.set(row.key, row);
-    }
   }
-  async function folderRows(folder, person) {
-    const listing = result(await read(() => kv2.list(folder)));
+  function track(row) {
+    changedRows.set(row.key, row);
+    if (parseKey(row.key).kind === "history") localHistory.set(row.key, row);
+  }
+  async function folderKeys(folder, person) {
+    const listing = result(await callBridge(() => kv2.list(folder)));
     if (listing.truncated) fail("TOO_LARGE");
     const keys = [];
     for (const path of listing.keys) {
@@ -407,36 +575,132 @@ function contacts(kv2) {
         unreadable.add(key);
       }
     }
+    return keys;
+  }
+  async function folderRows(folder, person) {
+    const keys = await folderKeys(folder, person);
     const rows = [];
     for (let start = 0; start < keys.length; start += 3) {
       const group = keys.slice(start, start + 3);
-      const values = await Promise.all(group.map((key) => get(key, true)));
-      for (const [index, value] of values.entries()) {
-        if (value) rows.push({ key: group[index], value });
-      }
+      const found = await Promise.all(group.map((key) => get(key, true)));
+      rows.push(...found.filter(Boolean));
     }
     return rows;
   }
   async function load(historyKey = null) {
     unreadable.clear();
-    for (const row of seedRecords(localDay(/* @__PURE__ */ new Date()), "owner")) {
+    refused.clear();
+    const { row: own } = await readCutoff();
+    for (const row of rollback ? [] : seedRecords(localDay(/* @__PURE__ */ new Date()), "owner")) {
       if (row.key === discoveryKey || await get(row.key, true) !== null)
         continue;
       try {
         await put(row, true);
       } catch (e) {
-        if (e.code !== "PRECONDITION_FAILED" || await get(row.key, true) === null)
+        if (rollback || e.code !== "PRECONDITION_FAILED" || await get(row.key, true) === null)
           throw e;
       }
     }
     const rows = (await folderRows("person/")).concat(await folderRows("note/"));
-    const key = appId + "/me/me", value = await get(key, true);
-    if (value) rows.push({ key, value });
+    if (own) rows.push(own);
     const versions = historyKey ? await history(historyKey) : [...localHistory.values()];
-    return rows.concat(versions);
+    return visibleRows(rows.concat(versions));
   }
-  function history(key) {
-    return folderRows("history/", parseKey(key).person);
+  function visibleRows(rows) {
+    return rows.filter((row) => {
+      if (row.notEncrypted && hidesPlaintext()) {
+        refused.add(row.key);
+        return false;
+      }
+      return row.key !== meKey || !rollback;
+    });
+  }
+  async function history(key) {
+    if (highestCounter > 0) await readCutoff();
+    const rows = await folderRows("history/", parseKey(key).person);
+    if (rows.some((row) => row.notEncrypted)) await readCutoff();
+    return visibleRows(rows);
+  }
+  async function requireUnencryptedAccess(send = sendOnce) {
+    await readCutoff(send);
+    assertWritable();
+    if (hidesPlaintext()) fail("BAD_REQUEST");
+  }
+  async function reviewEncryption(key) {
+    await requireUnencryptedAccess();
+    const card = await get(key);
+    if (!card) fail("NOT_FOUND");
+    const person = parseKey(key).person;
+    const notes = await folderRows("note/", person);
+    const versions = await history(key);
+    if (hidesPlaintext()) fail("BAD_REQUEST");
+    return [card, ...notes, ...versions].filter((row) => row.notEncrypted);
+  }
+  async function encryptDetails(key, reviewed) {
+    assertWritable();
+    if (!Array.isArray(reviewed)) fail("BAD_REQUEST");
+    const rows = await reviewEncryption(key);
+    const keyed = (rows2) => Object.fromEntries(rows2.map((row) => [row.key, row.value]));
+    if (!reviewed.length || reviewed.length !== rows.length || !sameJson(keyed(rows), keyed(reviewed))) fail("PRECONDITION_FAILED");
+    for (const row of rows) {
+      const { key: key2, value } = row;
+      const sealed = await callBridge(() => sealRecord(row, sealer));
+      const opened = await callBridge(() => openRecord(sealed, sealer));
+      if (!sameJson(opened.value.data.private, value.data.private))
+        fail("BAD_REQUEST");
+      await requireUnencryptedAccess();
+      const latest = await storedRow(key2, sendOnce);
+      if (JSON.stringify(latest?.value) !== JSON.stringify(value))
+        fail("PRECONDITION_FAILED");
+      await put(sealed, false);
+      track({ key: key2, value });
+    }
+  }
+  async function unencryptedInInventory(own) {
+    if (own?.notEncrypted) return true;
+    for (const folder of ["person/", "note/", "history/"]) {
+      for (const key of await folderKeys(folder)) {
+        const bytes = await fetch(key, sendOnce);
+        if (bytes === null) continue;
+        try {
+          if (Object.hasOwn(decode(key, bytes).value.data, "private")) return true;
+        } catch {
+          unreadable.add(key);
+        }
+      }
+    }
+    return false;
+  }
+  function nextCutoff(marker) {
+    return {
+      since: marker?.since ?? (/* @__PURE__ */ new Date()).toISOString(),
+      counter: highestCounter + 1
+    };
+  }
+  async function sealWithCutoff(row, cutoff) {
+    const sealed = await callBridge(() => sealRecord({ ...row, cutoff }, sealer));
+    const opened = await callBridge(() => openRecord(sealed, sealer));
+    if (!sameJson(opened.cutoff, cutoff) || !sameJson(opened.value, row.value))
+      fail("BAD_REQUEST");
+    return sealed;
+  }
+  async function writeCutoff({ stored, row, marker }) {
+    const cutoff = nextCutoff(marker);
+    const sealed = await sealWithCutoff(row, cutoff);
+    const latest = await storedRow(meKey, sendOnce);
+    if (!sameJson(latest, stored)) fail("PRECONDITION_FAILED");
+    await put(sealed, false);
+    await rememberCutoff(cutoff.counter);
+  }
+  async function finishEncryption() {
+    let own;
+    for (let scan = 0; scan < 2; scan++) {
+      own = await readCutoff();
+      assertWritable();
+      if (!own.row || own.row.unavailable || await unencryptedInInventory(own.row))
+        fail("PRECONDITION_FAILED");
+    }
+    await writeCutoff(own);
   }
   function changes() {
     const rows = [...changedRows.values()];
@@ -444,12 +708,31 @@ function contacts(kv2) {
     return rows;
   }
   async function save({ key, expected, name, fields: fields2, saved }, createAction = "create", send = sendOnce) {
+    assertWritable();
     if (!key) {
       do {
         key = appId + "/person/" + makeSlug(name);
-      } while (await get(key, false, send));
+      } while (await storedRow(key, send));
     }
-    const current = await get(key, false, send);
+    let own;
+    if (key === meKey || highestCounter > 0 || saved?.notEncrypted) {
+      own = await readCutoff(send);
+      assertWritable();
+    }
+    const stored = key === meKey ? own.stored : await storedRow(key, send);
+    if (stored && Object.hasOwn(stored.value.data, "private") && key !== meKey)
+      await readCutoff(send);
+    assertWritable();
+    if (key === meKey && ownUnavailable || saved?.notEncrypted && hidesPlaintext())
+      fail("BAD_REQUEST");
+    const opened = stored ? await callBridge(() => openRecord(stored, sealer, { rejectPlaintext: hidesPlaintext() })) : null;
+    if (opened?.refused) {
+      refused.add(key);
+      fail("BAD_REQUEST");
+    }
+    const current = opened?.value ?? null;
+    const usesUnencrypted = opened?.notEncrypted || saved?.notEncrypted;
+    const cutoff = key === meKey && own.marker ? nextCutoff(own.marker) : null;
     if (JSON.stringify(current) !== JSON.stringify(expected ?? null))
       fail("PRECONDITION_FAILED");
     const now = /* @__PURE__ */ new Date(), day2 = localDay(now);
@@ -473,21 +756,36 @@ function contacts(kv2) {
           private: { ...current?.data.private, ...fields2 }
         }
       });
+      const snapshot = JSON.stringify({ prior: writes[1].value });
+      if (new TextEncoder().encode(snapshot).length > maxSealedInputBytes)
+        fail("TOO_LARGE");
+      const [history2, card] = await Promise.all([
+        callBridge(() => sealRecord(writes[0], sealer)),
+        cutoff ? sealWithCutoff(writes[1], cutoff) : callBridge(() => sealRecord(writes[1], sealer))
+      ]);
+      if (usesUnencrypted) await requireUnencryptedAccess(send);
       try {
-        await put(writes[0], true, send);
+        await put(history2, true, send);
+        track(writes[0]);
       } catch (e) {
-        if (e.code === "PRECONDITION_FAILED") continue;
+        if (!rollback && e.code === "PRECONDITION_FAILED") continue;
         throw e;
       }
-      if (JSON.stringify(await get(key, false, send)) !== JSON.stringify(current))
+      if (JSON.stringify(await storedRow(key, send)) !== JSON.stringify(stored))
         fail("PRECONDITION_FAILED");
-      await put(writes[1], !current, send);
+      await put(card, !current, send);
+      if (cutoff) await rememberCutoff(cutoff.counter);
+      track(writes[1]);
       return key;
     }
   }
   async function append(key, fields2) {
-    if (!await get(key)) fail("NOT_FOUND");
-    if (fields2.replaces && !await get(fields2.replaces)) fail("NOT_FOUND");
+    const own = key === meKey || highestCounter > 0 ? await readCutoff() : null;
+    assertWritable();
+    const card = key === meKey ? own.row : await get(key);
+    const previous = fields2.replaces ? await get(fields2.replaces) : null;
+    if (!card || card.unavailable || fields2.replaces && !previous) fail("NOT_FOUND");
+    if (card.notEncrypted || previous?.notEncrypted) await requireUnencryptedAccess();
     const person = parseKey(key).person;
     const now = /* @__PURE__ */ new Date(), added = localDay(now);
     const clock = [now.getHours(), now.getMinutes()].map((x) => String(x).padStart(2, "0")).join("");
@@ -501,11 +799,13 @@ function contacts(kv2) {
         now.toISOString().split(".")[0] + "Z",
         "owner"
       );
+      const stored = await callBridge(() => sealRecord(row, sealer));
       try {
-        await put(row, true);
+        await put(stored, true);
+        track(row);
         return key;
       } catch (e) {
-        if (e.code !== "PRECONDITION_FAILED") throw e;
+        if (rollback || e.code !== "PRECONDITION_FAILED") throw e;
       }
     }
   }
@@ -517,6 +817,14 @@ function contacts(kv2) {
     save,
     append,
     history,
+    reviewEncryption,
+    encryptDetails,
+    finishEncryption,
+    hidesPlaintext,
+    hasCutoff: () => highestCounter > 0,
+    ownUnavailable: () => ownUnavailable,
+    locked: () => rollback,
+    refused: () => refused.size,
     changes,
     importCard,
     skipped: () => unreadable.size
@@ -644,29 +952,29 @@ function parts(value, separator) {
 function parseVcardFile(text) {
   limit(text.length <= maxRawVcardBytes && utf8Bytes(text) <= maxRawVcardBytes);
   const cards = [];
-  let card2, version, fallback, malformed, properties, physicalLines;
+  let card, version, fallback, malformed, properties, physicalLines;
   let started = 0;
   let unreadable = 0;
   for (const { line, physical, colon } of unfold(text)) {
     if (/^BEGIN:VCARD$/i.test(line)) {
       limit(++started <= maxCards);
-      if (card2) unreadable++;
-      card2 = { name: "", private: {} };
+      if (card) unreadable++;
+      card = { name: "", private: {} };
       version = fallback = "";
       malformed = false;
       properties = 0;
       physicalLines = physical;
       continue;
     }
-    if (!card2) continue;
+    if (!card) continue;
     physicalLines += physical;
     limit(physicalLines <= maxPhysicalLines);
     if (/^END:VCARD$/i.test(line)) {
-      if (!card2.name) card2.name = fallback;
-      if (!malformed && card2.name.trim() && ["3.0", "4.0"].includes(version))
-        cards.push(card2);
+      if (!card.name) card.name = fallback;
+      if (!malformed && card.name.trim() && ["3.0", "4.0"].includes(version))
+        cards.push(card);
       else unreadable++;
-      card2 = null;
+      card = null;
       continue;
     }
     if (!line) continue;
@@ -682,7 +990,7 @@ function parseVcardFile(text) {
     const extension = /^X-TINYCLOUD-(\w+)-JSON$/.exec(prop);
     if (extension && fields.has(extension[1])) {
       try {
-        card2.private[fields.get(extension[1])] = JSON.parse(parts(rawValue)[0]);
+        card.private[fields.get(extension[1])] = JSON.parse(parts(rawValue)[0]);
       } catch {
       }
       continue;
@@ -694,9 +1002,9 @@ function parseVcardFile(text) {
       if (version) malformed = true;
       version = value.trim();
     } else if (prop === "FN") {
-      if (!card2.name) {
+      if (!card.name) {
         const name = parts(value)[0];
-        if (name.trim()) card2.name = name;
+        if (name.trim()) card.name = name;
       }
     } else if (prop === "N") {
       const [family, given, middle, prefix, suffix] = parts(value, ";");
@@ -716,17 +1024,17 @@ function parseVcardFile(text) {
       }
       const shape = /;X-TINYCLOUD-SHAPE=(TEXT|LIST|EMPTY)(?:;|$)/i.exec(spec)?.[1].toUpperCase();
       if (shape === "EMPTY") values = [];
-      const prior = card2.private[field];
+      const prior = card.private[field];
       if (prior !== void 0 || shape === "LIST" || shape === "EMPTY" || lists.has(prop) && shape !== "TEXT" || values.length > 1) {
         const list = Array.isArray(prior) ? prior : prior == null ? [] : [prior];
         for (const item of values) list.push(item);
-        card2.private[field] = list;
+        card.private[field] = list;
       } else {
-        card2.private[field] = values[0];
+        card.private[field] = values[0];
       }
     }
   }
-  if (card2) unreadable++;
+  if (card) unreadable++;
   return { cards, unreadable };
 }
 var escape = (value) => value.replace(/\\/g, "\\\\").replace(/\r\n|\r|\n/g, "\\n").replace(/[,;]/g, (char) => "\\" + char);
@@ -791,11 +1099,11 @@ function serializeVcard({ name, private: details }) {
 }
 
 // src/import.js
-function matchKeys(card2) {
-  const name = card2.name.trim().normalize().toLowerCase().replace(/\s+/g, " ");
+function matchKeys(card) {
+  const name = card.name.trim().normalize().toLowerCase().replace(/\s+/g, " ");
   const keys = [];
   for (const field of ["emails", "phones"]) {
-    const details = card2.private[field];
+    const details = card.private?.[field];
     for (const detail of Array.isArray(details) ? details : [details]) {
       if (typeof detail !== "string") continue;
       const text = detail.trim().toLowerCase();
@@ -808,12 +1116,12 @@ function matchKeys(card2) {
 function previewImport(candidates, peopleRows) {
   const known = new Set(peopleRows.flatMap((row) => matchKeys(row.value.data)));
   const earlier = /* @__PURE__ */ new Set();
-  return candidates.map((card2) => {
-    const keys = matchKeys(card2);
+  return candidates.map((card) => {
+    const keys = matchKeys(card);
     const matchInFile = keys.some((key) => earlier.has(key));
     const match = matchInFile || keys.some((key) => known.has(key));
     for (const key of keys) earlier.add(key);
-    return { card: card2, match, matchInFile, selected: !match };
+    return { card, match, matchInFile, selected: !match };
   });
 }
 async function importSelected(book2, entries, progress = () => {
@@ -842,12 +1150,12 @@ async function importSelected(book2, entries, progress = () => {
   async function worker() {
     while (next < selected.length) {
       const index = next++;
-      const { card: card2 } = selected[index];
+      const { card } = selected[index];
       try {
-        await book2.importCard(card2, send);
+        await book2.importCard(card, send);
         summary.added++;
       } catch (error) {
-        failures[index] = { name: card2.name, code: error.code || "INTERNAL" };
+        failures[index] = { name: card.name, code: error.code || "INTERNAL" };
       }
       done++;
       update();
@@ -992,7 +1300,8 @@ function ExportCards({ cards, own, single, close }) {
   const [pending, setPending] = useState(false);
   const field = useRef(null);
   const selected = includeMe && own ? [...cards, own] : cards;
-  const output = selected.map((row) => serializeVcard(row.value.data)).join("");
+  const opened = selected.filter((row) => !row.unavailable);
+  const output = opened.map((row) => serializeVcard(row.value.data)).join("");
   async function offer() {
     setPending(true);
     try {
@@ -1018,6 +1327,7 @@ function ExportCards({ cards, own, single, close }) {
   return <section className="transfer">
       <h2>{single ? words.exportOne : words.exportAll}</h2>
       <p>{words.exportNotice}</p>
+      {opened.length !== selected.length && <p>{words.exportSkipped}</p>}
       {own && <label className="choice">
           <input
     type="checkbox"
@@ -1093,10 +1403,21 @@ function changedCardFields(inputs, prior = {}) {
 }
 
 // src/style.css
-var style_default = "* {\n  box-sizing: border-box;\n}\nbody {\n  margin: 0;\n  background: #faf9f4;\n  color: #233c36;\n  font:\n    16px/1.5 'Gill Sans',\n    'Trebuchet MS',\n    sans-serif;\n}\nmain {\n  max-width: 1392px;\n  margin: auto;\n  padding: clamp(16px, 3.5vw, 56px);\n}\nbutton,\ninput,\ntextarea {\n  font: inherit;\n  color: inherit;\n}\nbutton {\n  cursor: pointer;\n  background: transparent;\n  border: 1px solid #acb9ad;\n  border-radius: 5px;\n  padding: 7px 14px;\n}\nbutton:hover:not(:disabled),\nsummary:hover {\n  background: #e5ece1;\n}\nbutton:disabled {\n  cursor: default;\n  opacity: 0.64;\n}\nbutton:focus-visible,\ninput:focus-visible,\nsummary:focus-visible,\ntextarea:focus-visible {\n  outline: 3px solid #a85721;\n  outline-offset: 2px;\n}\n.primary {\n  background: #254d40;\n  color: white;\n  border-color: #254d40;\n}\n.primary:hover:not(:disabled) {\n  background: #35634f;\n}\nheader,\n.line,\n.actions,\n.tools {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n}\n.actions,\n.tools {\n  flex-wrap: wrap;\n  justify-content: flex-start;\n}\nheader {\n  align-items: flex-start;\n  border-bottom: 3px double #95a79a;\n  padding-bottom: 20px;\n}\nh1,\nh2,\nh3,\nh4,\np {\n  margin: 0;\n}\nh1,\nh2,\nh3,\n.personName {\n  font-family: Georgia, serif;\n  font-weight: normal;\n  line-height: 1.12;\n}\nh1 {\n  font-size: clamp(44px, 5vw, 76px);\n  letter-spacing: -0.055em;\n}\nheader p {\n  max-width: 540px;\n  margin-top: 9px;\n}\nh2 {\n  font-size: clamp(32px, 4vw, 58px);\n  letter-spacing: -0.04em;\n}\nh3 {\n  font-size: 27px;\n  margin: 18px 0 12px;\n}\nh4 {\n  font-size: 17px;\n}\n.layout {\n  display: grid;\n  grid-template-columns: minmax(245px, 31%) minmax(0, 1fr);\n  min-height: 56vh;\n}\naside {\n  padding: 24px 22px 24px 0;\n  border-right: 1px solid #bbc9bd;\n}\narticle {\n  padding: 28px clamp(16px, 4vw, 64px);\n  max-width: 910px;\n  overflow-wrap: anywhere;\n}\n.line h3 {\n  margin: 0;\n}\n.search,\nlabel input,\nlabel textarea {\n  width: 100%;\n  display: block;\n  border: 1px solid #acb9ad;\n  border-radius: 5px;\n  background: #fffef9;\n  padding: 9px 11px;\n}\n.search {\n  margin: 16px 0;\n}\n.row {\n  display: flex;\n  align-items: center;\n  width: 100%;\n  text-align: left;\n  gap: 12px;\n  border: 0;\n  border-radius: 0;\n  border-bottom: 1px solid #d8ded4;\n  padding: 11px 6px;\n}\n.selected {\n  background: #e5ece1;\n}\n.own {\n  border-block: 1px solid #94a598;\n  margin-bottom: 10px;\n}\n.stamp {\n  width: 40px;\n  height: 40px;\n  border-radius: 50%;\n  background: #dce5d4;\n  color: #345440;\n  display: inline-grid;\n  place-items: center;\n  font:\n    19px Georgia,\n    serif;\n  flex: none;\n}\n.own .stamp,\n.hero .stamp {\n  background: #295044;\n  color: #fff9e6;\n}\n.hero {\n  padding: 18px 0 24px;\n  border-bottom: 1px solid #a4b7a8;\n}\n.hero .stamp {\n  width: 57px;\n  height: 57px;\n  font-size: 25px;\n  margin-bottom: 10px;\n}\n.hero h2 {\n  margin: 0 0 6px;\n}\n.personName {\n  font-size: 20px;\n}\n.muted,\nsmall,\ndt {\n  color: #52655e;\n}\nsmall {\n  display: block;\n  font-size: 13px;\n}\n.tabs {\n  display: flex;\n  gap: 6px;\n  flex-wrap: wrap;\n  padding: 12px 0;\n  border-bottom: 1px solid #cbd4c9;\n}\n.tabs button {\n  border: 0;\n}\n.tabs [aria-pressed='true'] {\n  background: #dee7d8;\n}\n.blank {\n  padding: 38px 0;\n}\n.blank p {\n  margin: 10px 0;\n}\n.entry {\n  border-left: 2px solid #b1bda7;\n  padding-left: 15px;\n  margin: 16px 0 22px;\n}\n.entry p,\n.entry small {\n  margin: 5px 0;\n  white-space: pre-wrap;\n}\ndl {\n  margin: 0;\n}\ndl > div {\n  display: grid;\n  grid-template-columns: minmax(90px, 28%) 1fr;\n  gap: 12px;\n  border-bottom: 1px solid #d8ded4;\n  padding: 8px 0;\n}\ndd {\n  margin: 0;\n  white-space: pre-wrap;\n}\nfooter {\n  border-top: 1px solid #acbaad;\n  padding-top: 15px;\n  color: #53665e;\n  font-size: 13px;\n}\nsummary {\n  cursor: pointer;\n}\nheader details {\n  position: relative;\n}\nheader details > div {\n  position: absolute;\n  right: 0;\n  background: #fffef9;\n  border: 1px solid #abb8a9;\n  border-radius: 6px;\n  padding: 14px;\n  width: 210px;\n  z-index: 2;\n}\nheader details button {\n  width: 100%;\n  margin-top: 5px;\n}\n.back {\n  display: none;\n}\nform {\n  max-width: 560px;\n}\nlabel {\n  display: block;\n  margin: 12px 0;\n}\ntextarea {\n  min-height: 70px;\n}\nlabel input,\nlabel textarea {\n  margin-top: 4px;\n}\n[role='alert'] {\n  background: #ffefd9;\n  padding: 12px;\n  margin: 10px 0;\n}\n.busy {\n  padding: 16px;\n}\n.tools {\n  margin-top: 12px;\n}\ndetails dd {\n  margin-left: 10px;\n}\nfooter details {\n  margin-top: 8px;\n}\n@media (max-width: 660px) {\n  main {\n    padding: 18px 16px;\n  }\n  header {\n    padding-bottom: 14px;\n  }\n  header p {\n    font-size: 14px;\n  }\n  .layout {\n    display: block;\n  }\n  .detail aside,\n  .list article {\n    display: none;\n  }\n  aside,\n  article {\n    padding: 18px 0;\n    border: 0;\n  }\n  .back {\n    display: inline-block;\n  }\n  .hero {\n    padding: 16px 0;\n  }\n  .entry {\n    margin: 12px 0;\n  }\n  .layout {\n    min-height: 48vh;\n  }\n}\n@media (max-width: 660px) {\n  .list .selected {\n    background: transparent;\n  }\n}\nheader summary {\n  white-space: nowrap;\n}\n.transfer {\n  max-width: 680px;\n  padding: 28px 0;\n  overflow-wrap: anywhere;\n}\n.transfer h2,\n.transfer p,\n.transfer dl {\n  margin-bottom: 16px;\n}\n.transfer .actions,\n.exportOne {\n  margin-top: 16px;\n}\n.transfer textarea {\n  font: 14px/1.4 monospace;\n}\n.choices {\n  max-height: 50vh;\n  overflow-y: auto;\n}\n.choice {\n  display: flex;\n  align-items: baseline;\n  gap: 12px;\n  padding: 10px 0;\n  margin: 0;\n  border-bottom: 1px solid #d8ded4;\n}\n.choice input {\n  width: auto;\n  accent-color: #254d40;\n}\n.previewCard {\n  border-bottom: 1px solid #d8ded4;\n}\n.previewCard .choice {\n  border: 0;\n}\n.matchChoice {\n  margin: 0 0 12px 26px;\n  padding: 0;\n  border: 0;\n}\n.matchChoice legend {\n  font-size: 14px;\n  color: #52655e;\n}\n.matchChoice label {\n  display: inline-flex;\n  gap: 8px;\n  align-items: center;\n  padding: 5px 12px 5px 0;\n  margin: 0;\n  cursor: pointer;\n}\n.matchChoice input {\n  width: auto;\n  margin: 0;\n  accent-color: #254d40;\n}\n";
+var style_default = "* {\n  box-sizing: border-box;\n}\nbody {\n  margin: 0;\n  background: #faf9f4;\n  color: #233c36;\n  font:\n    16px/1.5 'Gill Sans',\n    'Trebuchet MS',\n    sans-serif;\n}\nmain {\n  max-width: 1392px;\n  margin: auto;\n  padding: clamp(16px, 3.5vw, 56px);\n}\nbutton,\ninput,\ntextarea {\n  font: inherit;\n  color: inherit;\n}\nbutton {\n  cursor: pointer;\n  background: transparent;\n  border: 1px solid #acb9ad;\n  border-radius: 5px;\n  padding: 7px 14px;\n}\nbutton:hover:not(:disabled),\nsummary:hover {\n  background: #e5ece1;\n}\nbutton:disabled {\n  cursor: default;\n  opacity: 0.64;\n}\nbutton:focus-visible,\ninput:focus-visible,\nsummary:focus-visible,\ntextarea:focus-visible {\n  outline: 3px solid #a85721;\n  outline-offset: 2px;\n}\n.primary {\n  background: #254d40;\n  color: white;\n  border-color: #254d40;\n}\n.primary:hover:not(:disabled) {\n  background: #35634f;\n}\nheader,\n.line,\n.actions,\n.tools {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n}\n.actions,\n.tools {\n  flex-wrap: wrap;\n  justify-content: flex-start;\n}\nheader {\n  align-items: flex-start;\n  border-bottom: 3px double #95a79a;\n  padding-bottom: 20px;\n}\nh1,\nh2,\nh3,\nh4,\np {\n  margin: 0;\n}\n.locked-notice {\n  margin: 16px 0;\n  padding: 12px 16px;\n  border: 1px solid #99754f;\n  border-radius: 5px;\n  background: #fff4de;\n}\n.locked-notice h2 {\n  font: inherit;\n  font-weight: 700;\n}\n.locked-notice p {\n  margin-top: 4px;\n}\nh1,\nh2,\nh3,\n.personName {\n  font-family: Georgia, serif;\n  font-weight: normal;\n  line-height: 1.12;\n}\nh1 {\n  font-size: clamp(44px, 5vw, 76px);\n  letter-spacing: -0.055em;\n}\nheader p {\n  max-width: 540px;\n  margin-top: 9px;\n}\nh2 {\n  font-size: clamp(32px, 4vw, 58px);\n  letter-spacing: -0.04em;\n}\nh3 {\n  font-size: 27px;\n  margin: 18px 0 12px;\n}\nh4 {\n  font-size: 17px;\n}\n.layout {\n  display: grid;\n  grid-template-columns: minmax(245px, 31%) minmax(0, 1fr);\n  min-height: 56vh;\n}\naside {\n  padding: 24px 22px 24px 0;\n  border-right: 1px solid #bbc9bd;\n}\narticle {\n  padding: 28px clamp(16px, 4vw, 64px);\n  max-width: 910px;\n  overflow-wrap: anywhere;\n}\n.line h3 {\n  margin: 0;\n}\n.search,\nlabel input,\nlabel textarea {\n  width: 100%;\n  display: block;\n  border: 1px solid #acb9ad;\n  border-radius: 5px;\n  background: #fffef9;\n  padding: 9px 11px;\n}\n.search {\n  margin: 16px 0;\n}\n.row {\n  display: flex;\n  align-items: center;\n  width: 100%;\n  text-align: left;\n  gap: 12px;\n  border: 0;\n  border-radius: 0;\n  border-bottom: 1px solid #d8ded4;\n  padding: 11px 6px;\n}\n.selected {\n  background: #e5ece1;\n}\n.own {\n  border-block: 1px solid #94a598;\n  margin-bottom: 10px;\n}\n.stamp {\n  width: 40px;\n  height: 40px;\n  border-radius: 50%;\n  background: #dce5d4;\n  color: #345440;\n  display: inline-grid;\n  place-items: center;\n  font:\n    19px Georgia,\n    serif;\n  flex: none;\n}\n.own .stamp,\n.hero .stamp {\n  background: #295044;\n  color: #fff9e6;\n}\n.hero {\n  padding: 18px 0 24px;\n  border-bottom: 1px solid #a4b7a8;\n}\n.hero .stamp {\n  width: 57px;\n  height: 57px;\n  font-size: 25px;\n  margin-bottom: 10px;\n}\n.hero h2 {\n  margin: 0 0 6px;\n}\n.personName {\n  font-size: 20px;\n}\n.muted,\nsmall,\ndt {\n  color: #52655e;\n}\nsmall {\n  display: block;\n  font-size: 13px;\n}\n.tabs {\n  display: flex;\n  gap: 6px;\n  flex-wrap: wrap;\n  padding: 12px 0;\n  border-bottom: 1px solid #cbd4c9;\n}\n.tabs button {\n  border: 0;\n}\n.tabs [aria-pressed='true'] {\n  background: #dee7d8;\n}\n.blank {\n  padding: 38px 0;\n}\n.blank p {\n  margin: 10px 0;\n}\n.entry {\n  border-left: 2px solid #b1bda7;\n  padding-left: 15px;\n  margin: 16px 0 22px;\n}\n.entry p,\n.entry small {\n  margin: 5px 0;\n  white-space: pre-wrap;\n}\ndl {\n  margin: 0;\n}\ndl > div {\n  display: grid;\n  grid-template-columns: minmax(90px, 28%) 1fr;\n  gap: 12px;\n  border-bottom: 1px solid #d8ded4;\n  padding: 8px 0;\n}\ndd {\n  margin: 0;\n  white-space: pre-wrap;\n}\nfooter {\n  border-top: 1px solid #acbaad;\n  padding-top: 15px;\n  color: #53665e;\n  font-size: 13px;\n}\nsummary {\n  cursor: pointer;\n}\nheader details {\n  position: relative;\n}\nheader details > div {\n  position: absolute;\n  right: 0;\n  background: #fffef9;\n  border: 1px solid #abb8a9;\n  border-radius: 6px;\n  padding: 14px;\n  width: 210px;\n  z-index: 2;\n}\nheader details button {\n  width: 100%;\n  margin-top: 5px;\n}\n.back {\n  display: none;\n}\nform {\n  max-width: 560px;\n}\nlabel {\n  display: block;\n  margin: 12px 0;\n}\ntextarea {\n  min-height: 70px;\n}\nlabel input,\nlabel textarea {\n  margin-top: 4px;\n}\n[role='alert'] {\n  background: #ffefd9;\n  padding: 12px;\n  margin: 10px 0;\n}\n.busy {\n  padding: 16px;\n}\n.tools {\n  margin-top: 12px;\n}\ndetails dd {\n  margin-left: 10px;\n}\nfooter details {\n  margin-top: 8px;\n}\n@media (max-width: 660px) {\n  main {\n    padding: 18px 16px;\n  }\n  header {\n    padding-bottom: 14px;\n  }\n  header p {\n    font-size: 14px;\n  }\n  .layout {\n    display: block;\n  }\n  .detail aside,\n  .list article {\n    display: none;\n  }\n  aside,\n  article {\n    padding: 18px 0;\n    border: 0;\n  }\n  .back {\n    display: inline-block;\n  }\n  .hero {\n    padding: 16px 0;\n  }\n  .entry {\n    margin: 12px 0;\n  }\n  .layout {\n    min-height: 48vh;\n  }\n}\n@media (max-width: 660px) {\n  .list .selected {\n    background: transparent;\n  }\n}\nheader summary {\n  white-space: nowrap;\n}\n.transfer {\n  max-width: 680px;\n  padding: 28px 0;\n  overflow-wrap: anywhere;\n}\n.transfer h2,\n.transfer p,\n.transfer dl {\n  margin-bottom: 16px;\n}\n.transfer .actions,\n.exportOne {\n  margin-top: 16px;\n}\n.transfer textarea {\n  font: 14px/1.4 monospace;\n}\n.choices {\n  max-height: 50vh;\n  overflow-y: auto;\n}\n.choice {\n  display: flex;\n  align-items: baseline;\n  gap: 12px;\n  padding: 10px 0;\n  margin: 0;\n  border-bottom: 1px solid #d8ded4;\n}\n.choice input {\n  width: auto;\n  accent-color: #254d40;\n}\n.previewCard {\n  border-bottom: 1px solid #d8ded4;\n}\n.previewCard .choice {\n  border: 0;\n}\n.matchChoice {\n  margin: 0 0 12px 26px;\n  padding: 0;\n  border: 0;\n}\n.matchChoice legend {\n  font-size: 14px;\n  color: #52655e;\n}\n.matchChoice label {\n  display: inline-flex;\n  gap: 8px;\n  align-items: center;\n  padding: 5px 12px 5px 0;\n  margin: 0;\n  cursor: pointer;\n}\n.matchChoice input {\n  width: auto;\n  margin: 0;\n  accent-color: #254d40;\n}\n";
 
 // src/Contacts.jsx
-var book = contacts(kv);
+async function sealedValue(reply, field) {
+  const result2 = await reply;
+  if (!result2.ok) {
+    const { code } = result2.error;
+    throw Object.assign(new Error(code), { code });
+  }
+  return result2[field];
+}
+var book = contacts(kv, {
+  seal: (value, key) => sealedValue(seal.encrypt(value, key), "sealed"),
+  open: (value, key) => sealedValue(seal.decrypt(value, key), "value")
+});
 var me = appId + "/me/me";
 function initials(name) {
   return name.trim().split(/\s+/).slice(0, 2).map((n) => Array.from(n)[0]).join("");
@@ -1122,11 +1443,80 @@ function Details({ data }) {
         </div>)}
     </dl> : <p>{words.noDetails}</p>;
 }
-function Form({ card: card2, mode, note, onSave, cancel, busy }) {
-  const entry = mode === "entry", d = card2?.value.data, prior = note?.value.data.private || {};
+function CheckedDetails({ disabled, checked, onChange }) {
+  return <label>
+      <input type="checkbox" name="checkedDetails" required disabled={disabled} checked={checked} onChange={onChange} />
+      {words.checkedDetails}
+    </label>;
+}
+function EncryptionReview({ cardKey, rows, initiallyExpanded, busy, onEncrypt, onError }) {
+  const [review, setReview] = useState2(null);
+  const [expanded, setExpanded] = useState2(initiallyExpanded);
+  const [checked, setChecked] = useState2(false);
+  const disclosure = useRef2(null);
+  useEffect(() => {
+    let ignored = false;
+    setReview(null);
+    setChecked(false);
+    book.reviewEncryption(cardKey).then(
+      (found) => {
+        if (!ignored) setReview(found);
+      },
+      (error) => {
+        if (!ignored) onError(errorText(error.code));
+      }
+    );
+    return () => {
+      ignored = true;
+    };
+  }, [cardKey, onError, rows]);
+  const canConfirm = expanded && !!review?.length && !busy;
+  return <section>
+      <details
+    ref={disclosure}
+    open={expanded}
+    onToggle={(event) => {
+      const open = event.currentTarget.open;
+      setExpanded(open);
+      if (!open) setChecked(false);
+    }}
+  >
+        <summary>{words.reviewDetails}</summary>
+        {expanded && review?.map(({ key, value }) => {
+    const kind = parseKey(key).kind;
+    const { data } = value;
+    return <section key={key}>
+              {(kind === "person" || kind === "me") && <h4>{data.name}</h4>}
+              {kind === "note" && <h4>{data.private.label || words.untitled}</h4>}
+              {kind === "history" && <strong>{words.actions[data.action]}</strong>}
+              <Details data={data.private} />
+            </section>;
+  })}
+      </details>
+      <CheckedDetails
+    disabled={!canConfirm}
+    checked={checked}
+    onChange={(event) => setChecked(disclosure.current.open && event.currentTarget.checked)}
+  />
+      <button
+    disabled={!canConfirm || !checked}
+    onClick={() => {
+      if (disclosure.current.open && canConfirm && checked) onEncrypt(review);
+    }}
+  >
+        {words.encryptDetails}
+      </button>
+    </section>;
+}
+function Form({ card, mode, note, onSave, cancel, busy }) {
+  const entry = mode === "entry", d = card?.value.data, prior = note?.value.data.private || {};
+  const unencrypted = entry ? note?.notEncrypted : card?.notEncrypted;
   function submit(e) {
     e.preventDefault();
     const inputs = new FormData(e.currentTarget);
+    const checked = inputs.has("checkedDetails");
+    inputs.delete("checkedDetails");
+    if (unencrypted && !checked) return;
     if (entry) {
       const fields2 = {};
       for (const [key, value] of inputs)
@@ -1144,7 +1534,7 @@ function Form({ card: card2, mode, note, onSave, cancel, busy }) {
   return <form onSubmit={submit}>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
         <h3>
-          {entry ? note ? words.correct : words.addEntry : card2 ? words.edit : words.add}
+          {entry ? note ? words.correct : words.addEntry : card ? words.edit : words.add}
         </h3>
         {entry ? <>
             {["label", "text", "source", "learned"].map((k) => <label key={k}>
@@ -1191,6 +1581,11 @@ function Form({ card: card2, mode, note, onSave, cancel, busy }) {
                   </label>;
   })}
           </>}
+        {unencrypted && <div>
+            <p>{words.reviewDetails}</p>
+            <Details data={entry ? prior : d.private} />
+            <CheckedDetails />
+          </div>}
         <div className="actions">
           <button className="primary">{entry ? words.saveEntry : words.save}</button>
           <button type="button" onClick={cancel}>
@@ -1208,6 +1603,7 @@ function Entry({ row, correct }) {
       </small>
       <h4>{p.label || words.untitled}</h4>
       <p>{p.text}</p>
+      {row.notEncrypted && <p>{words.detailsNotEncrypted}</p>}
       {p.source && <small>
           {words.from} {p.source}
         </small>}
@@ -1236,10 +1632,7 @@ function Contacts() {
         open(next);
         if (mode === "entry") setTab("entries");
       }
-      if (action) {
-        const changed = book.changes();
-        setRows((current2) => mergeRows(current2, changed));
-      } else {
+      if (!action) {
         const fresh = await book.load(tab === "history" ? key : null);
         setRows(fresh);
         if (!key && !window.matchMedia("(max-width:660px)").matches) {
@@ -1249,6 +1642,10 @@ function Contacts() {
     } catch (e) {
       setError(errorText(e.code));
     } finally {
+      if (action) {
+        const changed = book.changes();
+        if (changed.length) setRows((current2) => mergeRows(current2, changed));
+      }
       setBusy(false);
       lock.current = false;
     }
@@ -1268,8 +1665,17 @@ function Contacts() {
     setMode("");
     requestAnimationFrame(() => searchBox.current?.focus());
   }
-  const list = people(rows, query), card2 = rows.find((r) => r.key === key), data = card2?.value.data;
-  const related = card2 ? rows.filter((r) => r.value.data.person === parseKey(key).person) : [];
+  const locked = book.locked();
+  const lockedReason = locked ? "contacts-locked" : void 0;
+  const visibleRows = rows.filter(
+    (row) => !(row.notEncrypted && book.hidesPlaintext()) && !(row.key === me && locked)
+  );
+  const list = people(visibleRows, query), card = visibleRows.find((r) => r.key === key), own = visibleRows.find((r) => r.key === me), data = card?.value.data;
+  const related = card ? visibleRows.filter((r) => r.value.data.person === parseKey(key).person) : [];
+  const detailsNotEncrypted = card?.notEncrypted || related.some((row) => row.notEncrypted);
+  const writeDisabled = busy || !!error || locked;
+  const canFinish = own && !own.unavailable && !book.hidesPlaintext() && !visibleRows.some((row) => row.notEncrypted);
+  const hidden = book.refused();
   const notes = related.filter((r) => parseKey(r.key).kind === "note");
   const current = currentNotes(notes).sort(
     (a, b) => (b.value.data.private.learned || b.value.data.added).localeCompare(
@@ -1285,7 +1691,13 @@ function Contacts() {
     }
     run(async () => {
       const history = await book.history(key);
-      setRows((current2) => mergeRows(current2, history));
+      const person = parseKey(key).person;
+      setRows(
+        (current2) => current2.filter((row) => {
+          const parsed = parseKey(row.key);
+          return parsed.kind !== "history" || parsed.person !== person;
+        }).concat(history)
+      );
       setTab(next);
     });
   }
@@ -1297,17 +1709,17 @@ function Contacts() {
     open(null);
     setMode("card");
   }
-  function rowButton(id, title, subtitle, own = false) {
+  function rowButton(id, title, subtitle, own2 = false, notEncrypted = false) {
     return <button
       key={id}
       disabled={busy}
-      className={"row " + (own ? "own " : "") + (id === key ? "selected" : "")}
+      className={"row " + (own2 ? "own " : "") + (id === key ? "selected" : "")}
       onClick={() => open(id)}
     >
         <Stamp name={title} />
         <span>
           <span className="personName">{title}</span>
-          <small>{subtitle}</small>
+          <small>{notEncrypted ? words.detailsNotEncrypted : subtitle}</small>
         </span>
       </button>;
   }
@@ -1322,7 +1734,8 @@ function Contacts() {
             <summary>{words.menu}</summary>
             <div>
               <button
-    disabled={busy || !!error}
+    disabled={writeDisabled}
+    aria-describedby={lockedReason}
     onClick={() => setTransfer("import")}
   >
                 {words.import}
@@ -1336,7 +1749,11 @@ function Contacts() {
             </div>
           </details>}
       </header>
-      {error && <div role="alert">
+      {locked && <section className="locked-notice" role="alert">
+          <h2 id="contacts-locked">{words.lockedHeading}</h2>
+          <p>{words.lockedBody}</p>
+        </section>}
+      {error && !locked && <div role="alert">
           {error}{" "}
           <button
     onClick={() => {
@@ -1347,6 +1764,10 @@ function Contacts() {
             {words.retry}
           </button>
         </div>}
+      {hidden > 0 && <p role="status">
+          <strong>{words.hiddenRecord}</strong>{" "}
+          {hidden === 1 ? words.oneHiddenRecord : words.manyHiddenRecords.replace("{n}", hidden)}
+        </p>}
       {book.skipped() > 0 && <small role="status">
           {book.skipped()}{" "}
           {book.skipped() === 1 ? words.skippedEntry : words.skippedEntries}
@@ -1355,15 +1776,15 @@ function Contacts() {
           {mode || tab === "history" ? words.saving : words.loading}
         </p>}
       {transfer === "import" ? <ImportCards
-    rows={rows}
+    rows={visibleRows}
     book={book}
     close={(changed) => {
       setTransfer(null);
       if (changed) setRows(mergeRows(rows, book.changes()));
     }}
   /> : transfer ? <ExportCards
-    cards={transfer === "one" ? [card2] : people(rows)}
-    own={transfer === "all" && rows.find((r) => r.key === me)}
+    cards={transfer === "one" ? card ? [card] : [] : people(visibleRows)}
+    own={transfer === "all" && own}
     single={transfer === "one"}
     close={() => setTransfer(null)}
   /> : <section
@@ -1374,7 +1795,8 @@ function Contacts() {
             <div className="line">
               <h3>{words.people}</h3>
               <button
-    disabled={busy || !!error}
+    disabled={writeDisabled}
+    aria-describedby={lockedReason}
     className="primary"
     onClick={add}
   >
@@ -1390,19 +1812,20 @@ function Contacts() {
     value={query}
     onChange={(e) => search(e.target.value)}
   />
-            {rowButton(
+            {!locked && rowButton(
     me,
     words.me,
-    rows.find((r) => r.key === me)?.value.data.name || words.own,
-    true
+    book.ownUnavailable() || own?.unavailable ? words.detailsUnavailable : own?.value.data.name || words.own,
+    true,
+    own?.notEncrypted
   )}
             {list.map(
     (r) => rowButton(
       r.key,
       r.value.data.name,
-      display(
-        r.value.data.private.organization || r.value.data.private.role || ""
-      )
+      r.unavailable ? words.detailsUnavailable : display(r.value.data.private.organization || r.value.data.private.role || ""),
+      false,
+      r.notEncrypted
     )
   )}
             {!busy && !error && !list.length && <p className="blank">{query ? words.noMatch : words.emptyText}</p>}
@@ -1411,25 +1834,30 @@ function Contacts() {
             <button className="back" onClick={back}>
               {words.back}
             </button>
-            {mode ? <Form
+            {key === me && locked ? null : mode && !locked && !(key && !card && (key !== me || book.ownUnavailable())) ? <Form
     key={key + mode}
-    card={card2}
+    card={card}
     mode={mode}
-    busy={busy || !!error}
+    busy={writeDisabled}
     note={note}
     cancel={() => {
       setMode("");
       if (!key) back();
     }}
     onSave={(name, fields2) => run(
-      () => mode === "entry" ? book.append(key, fields2) : book.save({ key, expected: card2?.value, name, fields: fields2 })
+      () => mode === "entry" ? book.append(key, fields2) : book.save({ key, expected: card?.value, name, fields: fields2 })
     )}
-  /> : data ? <>
+  /> : card?.unavailable ? <section className="hero">
+                <Stamp name={data.name} />
+                <h2 ref={heading} tabIndex={-1}>{data.name}</h2>
+                <p role="status">{words.detailsUnavailable}</p>
+              </section> : data ? <>
                 <div className="hero">
                   <div className="line">
                     <Stamp name={data.name} />
                     <button
-    disabled={busy || !!error}
+    disabled={writeDisabled}
+    aria-describedby={lockedReason}
     onClick={() => setMode("card")}
   >
                       {words.edit}
@@ -1440,8 +1868,20 @@ function Contacts() {
                   </h2>
                   <small>
                     {key === me ? words.own + " \xB7 " : ""}
-                    {author(card2.value.by)} · {card2.value.at.slice(0, 10)}
+                    {author(card.value.by)} · {card.value.at.slice(0, 10)}
                   </small>
+                  {detailsNotEncrypted && <div>
+                      <p role="status">{words.detailsNotEncrypted}</p>
+                      <EncryptionReview
+    key={key + "/" + tab}
+    cardKey={key}
+    rows={rows}
+    initiallyExpanded={tab === "history"}
+    busy={writeDisabled}
+    onError={setError}
+    onEncrypt={(rows2) => run(() => book.encryptDetails(key, rows2))}
+  />
+                    </div>}
                 </div>
                 <nav className="tabs">
                   {["profile", "entries", "history"].map((t) => <button
@@ -1468,13 +1908,14 @@ function Contacts() {
                     <div className="line tools">
                       <h3>{words.entries}</h3>
                       <button
-    disabled={busy || !!error}
+    disabled={writeDisabled}
+    aria-describedby={lockedReason}
     onClick={() => editEntry(null)}
   >
                         {words.addEntry}
                       </button>
                     </div>
-                    {current.length ? current.map((r) => <Entry key={r.key} row={r} correct={editEntry} />) : <p>{words.emptyEntries}</p>}
+                    {current.length ? current.map((r) => <Entry key={r.key} row={r} correct={writeDisabled ? void 0 : editEntry} />) : <p>{words.emptyEntries}</p>}
                     {!!old.length && <details>
                         <summary>{words.earlier}</summary>
                         {old.map((r) => <Entry key={r.key} row={r} />)}
@@ -1490,36 +1931,43 @@ function Contacts() {
                             {r.value.at} · {author(r.value.by)}
                           </small>
                           <h4>{words.actions[r.value.data.action]}</h4>
+                          {r.notEncrypted && <p>{words.detailsNotEncrypted}</p>}
                           {prior && <>
                               <p>
                                 {prior.data.name} · {author(prior.by)}
                               </p>
                               <Details data={prior.data.private} />
-                              <button
-      disabled={busy || !!error}
-      onClick={() => run(
-        () => book.save({
-          key,
-          expected: card2.value,
-          saved: r
-        })
-      )}
+                              <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        if ((r.notEncrypted || card.notEncrypted) && !new FormData(event.currentTarget).has("checkedDetails")) return;
+        run(() => book.save({ key, expected: card.value, saved: r }));
+      }}
     >
-                                {words.restore}
-                              </button>
+                                {(r.notEncrypted || card.notEncrypted) && <>
+                                    <p>{words.reviewDetails}</p>
+                                    {card.notEncrypted && <Details data={data.private} />}
+                                    <CheckedDetails disabled={writeDisabled} />
+                                  </>}
+                                <button disabled={writeDisabled} aria-describedby={lockedReason}>
+                                  {words.restore}
+                                </button>
+                              </form>
                             </>}
                         </section>;
   })}
                   </>}
               </> : !busy && !error && <section className="blank">
                   <h2>
-                    {key === me ? words.own : rows.some((r) => parseKey(r.key).kind === "person") ? words.choose : words.empty}
+                    {key === me ? words.own : visibleRows.some((r) => parseKey(r.key).kind === "person") ? words.choose : words.empty}
                   </h2>
                   <p>
-                    {key === me ? words.emptyMe : key ? words.chooseText : words.emptyText}
+                    {key === me ? book.ownUnavailable() ? words.detailsUnavailable : words.emptyMe : key ? words.chooseText : words.emptyText}
                   </p>
                   <button
     className="primary"
+    disabled={writeDisabled || key === me && book.ownUnavailable()}
+    aria-describedby={lockedReason}
     onClick={() => key === me ? setMode("card") : add()}
   >
                     {key === me ? words.createMe : words.add}
@@ -1529,6 +1977,13 @@ function Contacts() {
         </section>}
       <footer>
         {words.privacy}
+        {canFinish && <div>
+            <button disabled={writeDisabled} onClick={() => run(() => book.finishEncryption())}>
+              {words.finishEncryption}
+            </button>
+            <p>{words.finishEncryptionHelp}</p>
+          </div>}
+        {(canFinish || book.hasCutoff()) && <p>{words.backupEncryption}</p>}
         <details>
           <summary>{words.about}</summary>
           <p>

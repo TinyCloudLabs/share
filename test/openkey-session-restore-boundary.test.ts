@@ -33,6 +33,7 @@ const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 vi.mock("@tinycloud/web-sdk", () => ({
   BrowserSessionStorage: class {
     activeAddress(): string | undefined { return persisted ? ADDRESS : undefined; }
+    activeAddressForRenewal(): string | undefined { return persisted ? ADDRESS : undefined; }
     async saveRuntimeGrants(): Promise<void> {}
   },
   TinyCloudWeb: class {

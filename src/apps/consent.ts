@@ -19,6 +19,7 @@
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import type { CatalogEntry } from "./catalog.ts";
 import { possessive } from "./possessive.ts";
+import { runnerSealingKey } from "./seal-key.ts";
 
 export const SQL_CHANGE_NOTICE = "Can change or delete its own tables.";
 
@@ -109,6 +110,9 @@ export function consentFor(entry: CatalogEntry, manifest: unknown, catalog: read
   const runtime = summarizeAccess(manifest);
   const nameOf = (id: string): string | undefined => catalog.find((candidate) => candidate.app_id === id)?.name;
   const notices: string[] = [];
+  if (typeof runnerSealingKey(manifest) === "string") {
+    notices.push(`${clip(entry.name)} can create one encryption key for its own data and use it to encrypt and open that data. The key stays in your TinyCloud if you remove ${clip(entry.name)}.`);
+  }
   // Changes first: they are the ones a person most needs to see.
   for (const kind of ["change", "read"] as const) {
     for (const item of runtime[kind]) {

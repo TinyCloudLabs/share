@@ -9,6 +9,13 @@
   "includePublicSpace": false,
   "expiry": "1h",
   "knowledge": "knowledge/index.md",
+  "keys_app_id": "xyz.tinycloud.share",
+  "keys": [
+    {
+      "path": "apps/xyz.tinycloud.share/xyz.tinycloud.tinyapps.contacts/seal-v1",
+      "abilities": ["decrypt", "key.create"]
+    }
+  ],
   "permissions": [
     {
       "service": "tinycloud.kv",
