@@ -1,6 +1,6 @@
 import "./install-buffer.js";
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { authorizationVerdictOf, extractRecapAttenuations, unauthorizedRecapCapabilities, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, extractRecapAttenuations, pkhDid, resolveManifest, resolveManifestOwner, unauthorizedRecapCapabilities, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import type { OpenKeyAuthorizeTinyCloud } from "@tinycloud/node-sdk/core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { EIP1193Provider } from "viem";
@@ -319,7 +319,8 @@ export interface SignInWithManifestOptions extends ManifestScope {
   readonly versionedSignIn?: boolean;
   /**
    * With `versionedSignIn` and `persistSession`: ask OpenKey to offer the owner automatic renewal for up to 90 days
-   * (OpenKey shows its renewal box. The ask is a standing purpose, so the box starts ticked when the request needs no sensitive confirm, and the owner can untick it). When the owner leaves it ticked, the lease is checked, admitted by the session's node and
+   * The box may start ticked only when the manifest grants no access to secrets or decryption. When the owner
+   * enables renewal, the lease is checked, admitted by the session's node and
    * kept with the saved session, and a reload past the signed end restores through it. Without a lease the sign-in is a
    * finite one. Default false.
    */
@@ -404,6 +405,19 @@ function checkManifest(options: SignInWithManifestOptions, manifest: Manifest, a
   }
 }
 
+function renewalAskFor(manifest: Manifest, address: string) {
+  const { resources } = resolveManifest(resolveManifestOwner(manifest, pkhDid(address, 1)));
+  const sensitive = resources.some(({ service, space, path, actions }) => {
+    if (service === "tinycloud.encryption") {
+      return actions.some((action) => /\/(?:decrypt|unwrap|\*)$/.test(action));
+    }
+    const secrets = space === "secrets" || service === "tinycloud.vault" || service === "tinycloud.secrets"
+      || path === "vault/secrets" || path.startsWith("vault/secrets/");
+    return secrets && actions.some((action) => action !== "tinycloud.capabilities/read" && !/\/(?:list|metadata)$/.test(action));
+  });
+  return sensitive ? SIGN_IN_RENEWAL_ASK : { ...SIGN_IN_RENEWAL_ASK, purpose: "standing" as const };
+}
+
 /**
  * The one sign-in: OpenKey, then a `TinyCloudWeb` session that holds `manifest`
  * plus the SDK's account-registry permissions by default (below), then the owned
@@ -481,14 +495,15 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   // With renewal it also asks OpenKey to offer a lease (OpenKey does so beside `expiryChangeable`, while its leases are on) and holds what
   // comes back, with the time it arrived, for `admitSignInRenewal`.
   const renewalPrefix = options.renewal === true ? options.sessionPrefix ?? DEFAULT_SESSION_PREFIX : undefined;
+  let manifest: Manifest;
   let approvalOutcome: { readonly renewal: unknown; readonly arrivedAt: number } | undefined;
   const versionedClient: OpenKeyAuthorizeTinyCloud = {
     authorizeTinyCloud: async (request, opts) => {
-      await ensureOpenKey();
+      const owner = await ensureOpenKey();
       if (renewalPrefix === undefined) return provider!.authorizeTinyCloud(request, opts);
       approvalOutcome = undefined;
       // `renewal` is on the request type of @openkey/sdk 0.13 and later; the node-sdk client type does not name it.
-      const asked = { ...request, renewal: SIGN_IN_RENEWAL_ASK };
+      const asked = { ...request, renewal: renewalAskFor(manifest, owner.address) };
       const result = await provider!.authorizeTinyCloud(asked, opts);
       approvalOutcome = { renewal: leaseFromApproval(result), arrivedAt: performance.now() };
       return result;
@@ -496,7 +511,6 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   };
   try {
     const restoreFirst = options.restoreBeforeOpenKey === true && session === undefined;
-    let manifest: Manifest;
     if (restoreFirst) {
       manifest = checked!;
     } else {
