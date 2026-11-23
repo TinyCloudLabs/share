@@ -63,17 +63,21 @@ describe("TC-4036 the published app-keys file for sealed Contacts", () => {
   const bytes = readFileSync(APP_KEYS_FILE);
   const parsed: unknown = JSON.parse(bytes.toString("utf8"));
 
-  it("is exactly the app id and one exact-path entry with decrypt and key.create", () => {
+  it("is exactly the type tag, the app id and one exact-path entry with decrypt and key.create", () => {
     expect(parsed).toEqual({
+      type: "openkey-app-keys",
       app_id: "xyz.tinycloud.share",
       keys: [{ path: CONTACTS_SEAL_KEY_PATH, abilities: ["decrypt", "key.create"] }],
     });
+    // OpenKey refuses a file with any other top-level field, so the field list is pinned in order too.
+    expect(Object.keys(parsed as object)).toEqual(["type", "app_id", "keys"]);
     expect(bytes.toString("utf8").endsWith("\n")).toBe(true);
   });
 
   it("passes every rule OpenKey applies, and the checker refuses what OpenKey refuses", () => {
     expect(bytes.length).toBeLessThanOrEqual(OPENKEY_MAX_BYTES);
-    const record = parsed as { app_id: string; keys: unknown };
+    const record = parsed as { type: string; app_id: string; keys: unknown };
+    expect(record.type).toBe("openkey-app-keys");
     expect(openKeyAcceptsKeys(record.app_id, record.keys)).toBe(true);
     const app = "xyz.tinycloud.share";
     expect(openKeyAcceptsKeys(app, [{ path: CONTACTS_SEAL_KEY_PATH, prefix: `apps/${app}/`, abilities: ["decrypt"] }])).toBe(false);
