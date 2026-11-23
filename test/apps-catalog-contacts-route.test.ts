@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as sdk from "@tinycloud/sdk-core";
