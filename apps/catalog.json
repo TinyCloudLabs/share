@@ -385,6 +385,7 @@
       "app_id": "xyz.tinycloud.tinyapps.contacts",
       "name": "Contacts",
       "description": "Keep the people you know, and what you learn about them, in one place.",
+      "unlisted": true,
       "publisher": {
         "name": "TinyCloud"
       },

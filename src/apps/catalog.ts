@@ -5,6 +5,7 @@ export interface CatalogEntry {
   app_id: string;
   name: string;
   description: string;
+  unlisted?: true;
   /** Kill switch: the entry stays listed, but cannot be opened. Lives here, not in the bundle, so the digests do not change. */
   disabled?: true;
   /** Why it is unavailable, in a sentence; shown as text. Present only with `disabled`. */

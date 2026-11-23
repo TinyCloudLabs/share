@@ -189,6 +189,7 @@ try {
     name: manifest.name,
     description: manifest.description,
     ...killSwitch,
+    ...(previous?.unlisted === true ? { unlisted: true } : {}),
     publisher,
     source: { repo: url.replace(/\.git$/, ""), tag: COMMIT_ID.test(ref) ? null : ref, commit },
     ...(release === undefined ? {} : { release }),

@@ -281,6 +281,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
   const uninstallPortsFor = options.uninstallPorts ?? createUninstallPorts;
   let opener: HTMLElement | null = null;
   const cards = new Map<string, HTMLElement>();
+  const panelHost = list.parentElement;
   /** The inline panel under each card, with what stops it listening to its run. */
   const panels = new Map<string, { panel: InlinePanel; release: () => void }>();
   const close = (): void => { sheet.close(); };
@@ -309,7 +310,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     earlier?.release();
     earlier?.panel.remove();
     const panel = new InlinePanel(label);
-    cards.get(appId)?.append(panel.root);
+    (cards.get(appId) ?? panelHost)?.append(panel.root);
     panels.set(appId, { panel, release: () => undefined });
     return panel;
   };
@@ -318,7 +319,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     current?.release();
     current?.panel.remove();
     panels.delete(appId);
-    cards.get(appId)?.querySelector<HTMLElement>(".apps-card__actions button")?.focus();
+    (cards.get(appId)?.querySelector<HTMLElement>(".apps-card__actions button") ?? panelHost)?.focus();
   };
 
   /** One repair at a time per app: a second Repair joins the running one. */
@@ -451,11 +452,12 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       return true;
     },
   };
-  if (currentEntries.length === 0) {
+  const listedEntries = currentEntries.filter((entry) => entry.unlisted !== true);
+  if (listedEntries.length === 0) {
     list.replaceWith(el("p", "apps-empty", ["No apps are listed yet."]));
     return mounted;
   }
-  for (const entry of currentEntries) {
+  for (const entry of listedEntries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);

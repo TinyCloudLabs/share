@@ -38,6 +38,14 @@
 
 When an app has multiple versions, its entries share an `app_id` and are adjacent in `apps`. The first entry is current and supplies the bundle for new installs. Older entries retain their own source, release, manifest, bundle and permission cap. Opening an existing install resolves the exact digest in its saved `install.json`; a digest not in the catalog is refused.
 
+## Unlisted apps
+
+Set `unlisted: true` on the current catalog entry to hide its card from `/apps/`.
+Open an unlisted app from its `/apps/run#<app_id>` link or a bookmark. The owner approves its access the same way as for a listed app.
+Unlisted isn't private: anyone with the link can load the bundle files and catalog entry.
+An installed unlisted app doesn't appear on `/apps/`; reopen it from its link or a bookmark.
+Re-vendoring keeps the setting. Remove `unlisted` from every entry for the app when listing it.
+
 ## Kill switch
 
 An entry can be switched off without touching its bundle:

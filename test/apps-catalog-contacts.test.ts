@@ -24,7 +24,7 @@ const APP_ID = "xyz.tinycloud.tinyapps.contacts";
 const entries = catalog.apps.filter((app) => app.app_id === APP_ID);
 
 describe("Contacts in the apps catalog", () => {
-  it("is listed, from the TinyCloud publisher", () => {
+  it("has a catalog entry from the TinyCloud publisher", () => {
     expect(entries.length).toBeGreaterThan(0);
     expect(entries.every((entry) => entry.publisher.name === "TinyCloud")).toBe(true);
   });

@@ -199,6 +199,7 @@ export function verifyCatalog(catalog, publicDir) {
       }
     }
     if (isText(entry.app_id) && installAppIdProblem(entry.app_id) !== null) fail(`app_id ${installAppIdProblem(entry.app_id)}`);
+    if (Object.hasOwn(entry, "unlisted") && entry.unlisted !== true) fail("unlisted must be true when present");
     // The kill switch lives in the entry, not in the bundle: flipping it changes no digest.
     if (entry.disabled !== undefined && entry.disabled !== true) fail("disabled must be true when present");
     if (entry.disabled === true && !isText(entry.disabledReason)) fail("disabled needs a disabledReason");
