@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { composeManifestRequest, type CallbackStrategy } from "@tinycloud/sdk-core";
+import { composeManifestRequest, pkhDid, resolveManifestOwner, type CallbackStrategy } from "@tinycloud/sdk-core";
 import type { Manifest, PermissionEntry } from "@tinycloud/web-sdk";
 import {
   authenticateWithOpenKey,
@@ -217,7 +217,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
 
     expect(state.clients).toHaveLength(3);
     expect(manifestOf(0).permissions).toContainEqual(expect.objectContaining({ service: "tinycloud.encryption" }));
-    expect(manifestOf(0).permissions).toEqual(shareManifest(SENDER.address).permissions);
+    expect(manifestOf(0).permissions).toEqual(shareManifest.permissions);
     // The viewer's manifest asks for the private copies area and nothing else.
     expect(manifestOf(1).permissions).toEqual(filesForYouPermissions());
     expect(manifestOf(1).permissions!.map((entry) => entry.service)).toEqual(["tinycloud.kv"]);
@@ -278,7 +278,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     const seen: string[] = [];
     await signInWithManifest({ manifest: (address) => { seen.push(address); return APP_MANIFEST; }, config: CONFIG });
     expect(seen).toEqual(["0x0000000000000000000000000000000000000000", SENDER.address]);
-    const permissions = shareManifest(SENDER.address).permissions!;
+    const permissions = resolveManifestOwner(shareManifest, pkhDid(SENDER.address, 1)).permissions!;
     expect(permissions).toEqual(expect.arrayContaining(pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: SENDER.address }) })));
     expect(permissions.some((entry) => entry.path.toLowerCase() === ownerEncryptionNetwork(SENDER.address))).toBe(false);
     expect(permissions.some((entry) => entry.actions.includes("network.create"))).toBe(false);
@@ -512,7 +512,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
   });
 
   it("the library's manifest is refused under Save's scope, and Save's under the library's wrong space list", async () => {
-    await refused(shareManifest(SENDER.address), "action-not-allowed", SAVE_COPY_MANIFEST_SCOPE);
+    await refused(shareManifest, "action-not-allowed", SAVE_COPY_MANIFEST_SCOPE);
     await refused(saveCopyManifest(), "space-not-allowed", { allowedSpaces: ["applications"], allowedServices: ["kv"], allowedActions: ["get", "put", "list"], allowedPathPrefixes: ["v1/"] });
   });
 
@@ -795,7 +795,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await expect(signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config: CONFIG })).resolves.toBeDefined();
     await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG })).resolves.toBeDefined();
     // The library's decrypt grant is for the signed-in account's own network, not anyone's.
-    const foreign = shareManifest(SENDER.address);
+    const foreign = structuredClone(shareManifest);
     // The share/ prefix row (option M) moves to the other account's checksummed prefix, the bare-network row to its bare network.
     const otherPrefix = pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: OTHER.address }) })[0]!.path;
     foreign.permissions = foreign.permissions!.map((entry) => entry.service === "tinycloud.encryption" ? { ...entry, path: entry.path.endsWith("/share/") ? otherPrefix : ownerEncryptionNetwork(OTHER.address) } : entry);
