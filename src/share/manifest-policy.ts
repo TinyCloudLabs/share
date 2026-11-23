@@ -15,7 +15,7 @@
  * This checks the manifest only. The SDK adds its own account-registry
  * permissions to every sign-in on top of it (see `signInWithManifest`).
  */
-import { resolveManifest, type Manifest, type ResourceCapability } from "@tinycloud/sdk-core";
+import { manifestUsesOwnerPlaceholder, pkhDid, resolveManifest, resolveManifestOwner, type Manifest, type ResourceCapability } from "@tinycloud/sdk-core";
 import { getAddress } from "viem";
 
 /** The delegation namespace, however it is cased. */
@@ -155,7 +155,10 @@ function describe(resource: ResourceCapability): string {
 export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, address: string): void {
   let resolved: ReturnType<typeof resolveManifest>;
   try {
-    resolved = resolveManifest(manifest);
+    const concrete = manifestUsesOwnerPlaceholder(manifest)
+      ? resolveManifestOwner(manifest, pkhDid(address, 1))
+      : manifest;
+    resolved = resolveManifest(concrete);
   } catch (error) {
     throw new ManifestRejectedError("invalid-manifest", error instanceof Error ? error.message : "the manifest did not resolve");
   }
