@@ -6,6 +6,8 @@
 import type { Manifest } from "@tinycloud/sdk-core";
 
 import type { AppData } from "./bridge.ts";
+import { runnerSealingKey } from "./seal-key.ts";
+import type { BoundSeal } from "./seal.ts";
 import { type CatalogEntry, EntryDisabledError, assertAvailable, catalog as bundledCatalog } from "./catalog.ts";
 import { type ManifestSdk, openManifest, openScope } from "./grants.ts";
 import type { ManifestScope } from "../share/manifest-policy.js";
@@ -33,6 +35,7 @@ export interface SignInPlan {
 /** The runtime session: the app's data, and when it may no longer be used. */
 export interface RuntimeSession {
   readonly data: AppData;
+  readonly sealFor?: (keyPath: string) => BoundSeal | undefined;
   /** Epoch ms after which the session may no longer be used (the signed session's own expiry, less a margin). */
   readonly expiresAt: number;
   /** True while a renewal lease runs for this session: its end is not the owner's last word, so a tab that reaches it detaches and keeps the lease. */
@@ -163,6 +166,7 @@ export function signInPlan(loaded: ManifestResult, sdk: ManifestSdk): SignInPlan
   let catalog: Manifest;
   try {
     catalog = sdk.validateManifest(loaded.manifest);
+    if (runnerSealingKey(catalog) === null) throw new Error("invalid sealing key declaration");
   } catch (cause) {
     throw new RunError("catalog-unavailable", { cause, detail: "the catalog manifest is not valid" });
   }

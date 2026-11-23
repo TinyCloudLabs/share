@@ -7,12 +7,12 @@
  *       → parent (the runner page: ../../apps/bridge.ts)
  *
  * and back as `cap/result`. Everything on the wire is plain data: strings,
- * numbers, booleans, null, arrays, plain objects and Uint8Array. No session,
- * token, key, DID or URL is ever part of a request or a result.
+ * numbers, booleans, null, arrays, plain objects and Uint8Array. Session
+ * credentials and encryption key material stay in the host.
  */
 
 /** The operations v1 knows. Anything else under `cap/` is dropped by the bridge. */
-export const CAP_OPS = ["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute", "file.save"] as const;
+export const CAP_OPS = ["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute", "seal.encrypt", "seal.decrypt", "file.save"] as const;
 export type CapOp = (typeof CAP_OPS)[number];
 
 export const CAP_TYPE_PREFIX = "cap/";

@@ -1,5 +1,5 @@
 /**
- * `import { sql, kv } from "@tinycloud/app"`: the in-frame client of the runner's
+ * `import { sql, kv, seal } from "@tinycloud/app"`: the in-frame client of the runner's
  * `cap/*` bridge. Runs ONLY inside the opaque-origin child frame of an installed
  * app (the module file is sent to runner frames only; see JSX_MODULE_SPECS).
  *
@@ -19,6 +19,8 @@
  *   kv.del(key)                      -> { ok }
  *   sql.query(db, text, params = []) -> { ok, columns, rows, rowCount }     one read-only statement
  *   sql.execute(db, text, params=[]) -> { ok, changes, lastInsertRowId }   one write or schema statement
+ *   seal.encrypt(value)             -> { ok, sealed }
+ *   seal.decrypt(sealed)            -> { ok, value }
  *   file.save(name, body, opts?)     -> { ok }       offers the owner a file to save; opts: { type? }; see below
  */
 import { CAP_LIMITS, CAP_RESULT_TYPE, capError, type CapOp, type CapResult } from "./cap-protocol.js";
@@ -122,6 +124,12 @@ export const kv = Object.freeze({
 export const sql = Object.freeze({
   query: (db: unknown, text: unknown, params: unknown = []): Promise<CapResult> => sqlArgs("sql.query", db, text, params),
   execute: (db: unknown, text: unknown, params: unknown = []): Promise<CapResult> => sqlArgs("sql.execute", db, text, params),
+});
+
+/** Seal and open JSON using the single key the app has permission to use. */
+export const seal = Object.freeze({
+  encrypt: (value: unknown): Promise<CapResult> => send("seal.encrypt", { value }),
+  decrypt: (sealed: unknown): Promise<CapResult> => (isText(sealed) ? send("seal.decrypt", { sealed }) : bad("The sealed value must be a string.")),
 });
 
 /**

@@ -17,6 +17,7 @@
  */
 import { manifestUsesOwnerPlaceholder, pkhDid, resolveManifest, resolveManifestOwner, type Manifest, type ResourceCapability } from "@tinycloud/sdk-core";
 import { getAddress } from "viem";
+import { runnerSealingKey } from "../apps/seal-key.js";
 
 /** The delegation namespace, however it is cased. */
 const DELEGATION = /^(?:tinycloud\.)?delegation$/i;
@@ -55,6 +56,8 @@ export type ScopedPrefix = string | { readonly space: string; readonly prefix: s
 
 /** What one caller says its manifest may ask for. Everything not listed is refused. */
 export interface ManifestScope {
+  /** The runner's exact manifest.keys declaration, which the generic SDK resolver does not emit. */
+  readonly allowedRunnerKeyPath?: string;
   /** Spaces the manifest may name. Omitted: only the manifest's own `space`. A space-wide `tinycloud.capabilities` read is allowed only in these too. */
   readonly allowedSpaces?: readonly string[];
   /** Services (`tinycloud.kv`, or `kv`). Omitted: kv, sql and vault. `capabilities` (read) is allowed in `allowedSpaces` without being named; `delegation` only if named here AND by a qualified entry in `allowedActions`. */
@@ -153,6 +156,12 @@ function describe(resource: ResourceCapability): string {
  * to check the shape first.
  */
 export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, address: string): void {
+  if (manifest.keys !== undefined || manifest.keys_app_id !== undefined || scope.allowedRunnerKeyPath !== undefined) {
+    const key = runnerSealingKey(manifest);
+    if (key === null || key !== scope.allowedRunnerKeyPath) {
+      throw new ManifestRejectedError("path-not-allowed", "the app key is outside the declared scope");
+    }
+  }
   let resolved: ReturnType<typeof resolveManifest>;
   try {
     const concrete = manifestUsesOwnerPlaceholder(manifest)
