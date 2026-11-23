@@ -100,8 +100,8 @@ Nothing about the session, its keys, the owner, the node or any URL is in any fr
 | `kv.del(key)` | `{key}` | `{ok}` |
 | `sql.query(db, text, params = [])` | `{db, sql, params}` | `{ok, columns, rows, rowCount}` |
 | `sql.execute(db, text, params = [])` | `{db, sql, params}` | `{ok, changes, lastInsertRowId}` |
-| `seal.encrypt(value)` | `{value}` with a JSON value | `{ok, sealed}` with an opaque string |
-| `seal.decrypt(sealed)` | `{sealed}` with the returned string | `{ok, value}` with the original JSON |
+| `seal.encrypt(value, context)` | `{value, context}` with a JSON value and the full record key | `{ok, sealed}` with an opaque string |
+| `seal.decrypt(sealed, context)` | `{sealed, context}` with the returned string and the same record key | `{ok, value}` with the original JSON |
 | `file.save(name, body, opts?)` | `{name, body, type?}`; body is a string or Uint8Array | `{ok}` once the offer is showing (see below) |
 
 Every call resolves `{ok: true, …}` or `{ok: false, error: {code, message}}`; the bridge never
@@ -140,11 +140,15 @@ manifest declares `keys_app_id: "xyz.tinycloud.share"` and one `keys` entry with
 The runner shows this permission before sign-in. It asks for the key with the app's other grants
 and the usual renewal option. A reopen uses an already approved key when the session holds it.
 
-Import `seal` from `@tinycloud/app`. Use `seal.encrypt(value)` to encrypt a JSON value and
-store the returned `sealed` string with the app's data. Use `seal.decrypt(sealed)` to open it.
-Share chooses the key from the installed manifest and keeps the key material outside the app.
-The saved manifest and the approved session must both allow the same key. The app can encrypt
-up to 256 KiB of UTF-8 JSON and open an encrypted string up to 384 KiB.
+Import `seal` from `@tinycloud/app`. Use `seal.encrypt(value, context)` to encrypt a JSON
+value and store the returned `sealed` string with the app's data. Use
+`seal.decrypt(sealed, context)` to open it. Use the full record key as `context`, including the
+app id and no leading slash. The key can be up to 512 characters. An encrypted value opens
+only for the same record key, owner and space.
+
+Share chooses the encryption key from the installed manifest and keeps its key material
+outside the app. The saved manifest and the approved session must both allow the same key.
+The app can encrypt up to 256 KiB of UTF-8 JSON and open an encrypted string up to 384 KiB.
 
 ### Saving a file: `file.save`
 

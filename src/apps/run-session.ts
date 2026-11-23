@@ -352,7 +352,7 @@ export function createRunPorts(): RunPorts {
         try {
           const keyPath = selectedPlan.scope.allowedRunnerKeyPath;
           if (keyPath !== undefined) {
-            const sealFor = (active: TinyCloudWeb) => bindSeal(keyPath, active.session(), () => active.keys);
+            const sealFor = (active: TinyCloudWeb) => bindSeal(keyPath, space.id, active.session(), () => active.keys);
             boundSeal = await sealFor(signedIn.tinycloud);
             if (boundSeal === undefined && plan.narrow === true) {
               // The narrow sign-in reads the saved version. Only a full versioned

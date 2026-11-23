@@ -4,7 +4,7 @@ import type { NamedKeyEnvelope } from "@tinycloud/node-sdk/encryption-keys";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { createCapabilityBridge, MAX_SEAL_ENVELOPE_BYTES, MAX_SEAL_JSON_BYTES, type AppData } from "../src/apps/bridge.ts";
+import { createCapabilityBridge, MAX_SEAL_CONTEXT_CHARS, MAX_SEAL_ENVELOPE_BYTES, MAX_SEAL_JSON_BYTES, type AppData } from "../src/apps/bridge.ts";
 import type { CatalogEntry } from "../src/apps/catalog.ts";
 import { consentFor } from "../src/apps/consent.ts";
 import { capGrants, makeAuthorizer } from "../src/apps/grants.ts";
@@ -17,7 +17,10 @@ import { assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/mani
 const appId = "xyz.tinycloud.tinyapps.contacts";
 const keyPath = `apps/xyz.tinycloud.share/${appId}/seal-v1`;
 const owner = privateKeyToAccount(generatePrivateKey());
-const networkId = `urn:tinycloud:encryption:${sdk.pkhDid(owner.address, 1)}:default`;
+const ownerDid = sdk.pkhDid(owner.address, 1);
+const networkId = `urn:tinycloud:encryption:${ownerDid}:default`;
+const spaceId = `tinycloud:pkh:eip155:1:${owner.address}:applications`;
+const context = `${appId}/person/alex-0123abcd`;
 const key = { path: keyPath, abilities: ["decrypt", "key.create"] } satisfies NonNullable<sdk.Manifest["keys"]>[number];
 const original: sdk.Manifest = {
   app_id: appId, name: "Contacts", defaults: false, space: "applications", includePublicSpace: false,
@@ -98,10 +101,10 @@ describe("binding the signed session's exact key", () => {
       { [`${exact}/`]: { [decrypt]: [{}], [create]: [{}] } },
       { [exact]: { [decrypt]: [{}] } },
       { [exact]: { [decrypt]: [{ condition: true }], [create]: [{}] } },
-    ]) expect(await bindSeal(keyPath, await signed(att), getKeys)).toBeUndefined();
+    ]) expect(await bindSeal(keyPath, spaceId, await signed(att), getKeys)).toBeUndefined();
     const approved = await signed({ [exact]: { [decrypt]: [{}], [create]: [{}] } });
-    expect(await bindSeal(keyPath, { ...approved, signature: "0x" }, getKeys)).toBeUndefined();
-    expect(await bindSeal(keyPath, approved, getKeys)).toMatchObject({ keyPath, networkId });
+    expect(await bindSeal(keyPath, spaceId, { ...approved, signature: "0x" }, getKeys)).toBeUndefined();
+    expect(await bindSeal(keyPath, spaceId, approved, getKeys)).toMatchObject({ keyPath, networkId });
     expect(getKeys).not.toHaveBeenCalled();
   });
 });
@@ -136,8 +139,11 @@ function sealFixture() {
   };
   let bytes = new Uint8Array(0);
   const seal: BoundSeal = {
-    keyPath, networkId,
-    encrypt: vi.fn(async (value) => { bytes = new Uint8Array(value); return envelope; }),
+    keyPath, networkId, ownerDid, spaceId,
+    encrypt: vi.fn(async (value, aad) => {
+      bytes = new Uint8Array(value);
+      return { ...envelope, aad: Buffer.from(aad).toString("base64") };
+    }),
     decrypt: vi.fn(async () => bytes),
   };
   return { seal, envelope };
@@ -148,28 +154,28 @@ describe("the sealing bridge", () => {
     const { seal } = sealFixture();
     const call = harness(seal);
     const value = { name: "Aléx", answers: [true, null, 4] };
-    const encrypted = await call("seal.encrypt", { value });
+    const encrypted = await call("seal.encrypt", { value, context });
     expect(encrypted).toMatchObject({ ok: true, sealed: expect.any(String) });
     if (!encrypted.ok) return;
     expect(encrypted.sealed).not.toContain(value.name);
-    expect(await call("seal.decrypt", { sealed: encrypted.sealed })).toEqual({ ok: true, value });
+    expect(await call("seal.decrypt", { sealed: encrypted.sealed, context })).toEqual({ ok: true, value });
   });
 
   it("refuses both ops when the manifest or approval is missing and when the session expired", async () => {
     const denied = harness();
-    expect(await denied("seal.encrypt", { value: null })).toMatchObject({ error: { code: "PERMISSION_DENIED" } });
-    expect(await denied("seal.decrypt", { sealed: "{}" })).toMatchObject({ error: { code: "PERMISSION_DENIED" } });
+    expect(await denied("seal.encrypt", { value: null, context })).toMatchObject({ error: { code: "PERMISSION_DENIED" } });
+    expect(await denied("seal.decrypt", { sealed: "{}", context })).toMatchObject({ error: { code: "PERMISSION_DENIED" } });
     const { seal } = sealFixture();
-    expect(await harness(seal, false)("seal.encrypt", { value: null })).toMatchObject({ error: { code: "NOT_CONNECTED" } });
+    expect(await harness(seal, false)("seal.encrypt", { value: null, context })).toMatchObject({ error: { code: "NOT_CONNECTED" } });
     expect(seal.encrypt).not.toHaveBeenCalled();
   });
 
   it("refuses foreign keys or networks before any SDK call", async () => {
     const { seal, envelope } = sealFixture();
     const call = harness(seal);
-    expect(await call("seal.encrypt", { value: {}, keyPath: "other/key" })).toMatchObject({ error: { code: "BAD_REQUEST" } });
+    expect(await call("seal.encrypt", { value: {}, context, keyPath: "other/key" })).toMatchObject({ error: { code: "BAD_REQUEST" } });
     for (const other of [{ ...envelope, keyPath: "other/key" }, { ...envelope, networkId: `${networkId}-other` }]) {
-      expect(await call("seal.decrypt", { sealed: JSON.stringify(other) })).toMatchObject({ error: { code: "PERMISSION_DENIED" } });
+      expect(await call("seal.decrypt", { sealed: JSON.stringify(other), context })).toMatchObject({ error: { code: "PERMISSION_DENIED" } });
     }
     expect(seal.encrypt).not.toHaveBeenCalled();
     expect(seal.decrypt).not.toHaveBeenCalled();
@@ -179,12 +185,63 @@ describe("the sealing bridge", () => {
     const { seal } = sealFixture();
     const call = harness(seal);
     for (const value of [undefined, { nested: new Uint8Array([1]) }, [undefined]]) {
-      expect(await call("seal.encrypt", { value })).toMatchObject({ error: { code: "BAD_REQUEST" } });
+      expect(await call("seal.encrypt", { value, context })).toMatchObject({ error: { code: "BAD_REQUEST" } });
     }
-    expect(await call("seal.decrypt", { sealed: "{" })).toMatchObject({ error: { code: "BAD_REQUEST" } });
-    expect(await call("seal.decrypt", { sealed: JSON.stringify({ v: 1, networkId }) })).toMatchObject({ error: { code: "BAD_REQUEST" } });
-    expect(await call("seal.encrypt", { value: "é".repeat(MAX_SEAL_JSON_BYTES / 2) })).toMatchObject({ error: { code: "TOO_LARGE" } });
-    expect(await call("seal.decrypt", { sealed: "a".repeat(MAX_SEAL_ENVELOPE_BYTES + 1) })).toMatchObject({ error: { code: "TOO_LARGE" } });
+    expect(await call("seal.decrypt", { sealed: "{", context })).toMatchObject({ error: { code: "BAD_REQUEST" } });
+    expect(await call("seal.decrypt", { sealed: JSON.stringify({ v: 1, networkId }), context })).toMatchObject({ error: { code: "BAD_REQUEST" } });
+    expect(await call("seal.encrypt", { value: "é".repeat(MAX_SEAL_JSON_BYTES / 2), context })).toMatchObject({ error: { code: "TOO_LARGE" } });
+    expect(await call("seal.decrypt", { sealed: "a".repeat(MAX_SEAL_ENVELOPE_BYTES + 1), context })).toMatchObject({ error: { code: "TOO_LARGE" } });
+    expect(seal.encrypt).not.toHaveBeenCalled();
+    expect(seal.decrypt).not.toHaveBeenCalled();
+  });
+});
+
+describe("sealing context", () => {
+  it("rejects a sealed value from a different record, owner or space before SDK decryption", async () => {
+    const { seal } = sealFixture();
+    const call = harness(seal);
+    const encrypted = await call("seal.encrypt", { value: { name: "Alex" }, context });
+    if (!encrypted.ok || typeof encrypted.sealed !== "string") throw new Error("encrypt failed");
+    const envelope = JSON.parse(encrypted.sealed);
+    expect(JSON.parse(Buffer.from(envelope.aad, "base64").toString("utf8"))).toEqual(
+      ["tinycloud.app.seal/v1", ownerDid, spaceId, context],
+    );
+    expect(await call("seal.decrypt", { sealed: encrypted.sealed, context: `${appId}/person/another` })).toMatchObject({
+      error: { code: "CONTEXT_MISMATCH" },
+    });
+    for (const [wrongOwner, wrongSpace] of [
+      [sdk.pkhDid(privateKeyToAccount(generatePrivateKey()).address, 1), spaceId],
+      [ownerDid, spaceId.replace(":applications", ":other")],
+    ]) {
+      const aad = Buffer.from(JSON.stringify(["tinycloud.app.seal/v1", wrongOwner, wrongSpace, context])).toString("base64");
+      expect(await call("seal.decrypt", { sealed: JSON.stringify({ ...envelope, aad }), context })).toMatchObject({
+        error: { code: "CONTEXT_MISMATCH" },
+      });
+    }
+    expect(seal.decrypt).not.toHaveBeenCalled();
+
+    const anotherContext = `${appId}/person/another`;
+    const changedAad = Buffer.from(JSON.stringify(["tinycloud.app.seal/v1", ownerDid, spaceId, anotherContext])).toString("base64");
+    const retagged = await call("seal.decrypt", { sealed: JSON.stringify({ ...envelope, aad: changedAad }), context: anotherContext });
+    expect(retagged).toMatchObject({ error: { code: "CONTEXT_MISMATCH" } });
+    expect(retagged).not.toHaveProperty("value");
+    expect(seal.decrypt).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires a bounded full record key and rejects page-supplied owner or space", async () => {
+    const { seal } = sealFixture();
+    const call = harness(seal);
+    for (const op of ["seal.encrypt", "seal.decrypt"] as const) {
+      const args = op === "seal.encrypt" ? { value: true } : { sealed: "{}" };
+      for (const invalid of [undefined, "", "person/example", `/${context}`, `${appId}/../example`, `${appId}/person/white space`]) {
+        expect(await call(op, { ...args, context: invalid })).toMatchObject({ error: { code: "BAD_REQUEST" } });
+      }
+      const long = `${appId}/${"x".repeat(MAX_SEAL_CONTEXT_CHARS)}`;
+      expect(await call(op, { ...args, context: long })).toMatchObject({ error: { code: "TOO_LARGE" } });
+      for (const override of [{ ownerDid }, { spaceId }]) {
+        expect(await call(op, { ...args, context, ...override })).toMatchObject({ error: { code: "BAD_REQUEST" } });
+      }
+    }
     expect(seal.encrypt).not.toHaveBeenCalled();
     expect(seal.decrypt).not.toHaveBeenCalled();
   });

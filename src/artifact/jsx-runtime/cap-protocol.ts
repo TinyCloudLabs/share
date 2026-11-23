@@ -48,6 +48,7 @@ export const CAP_ERROR_CODES = [
   "SQL_ERROR",
   "BAD_REQUEST",
   "TOO_LARGE",
+  "CONTEXT_MISMATCH",
   "BUSY",
   "TIMEOUT",
   "INTERNAL",

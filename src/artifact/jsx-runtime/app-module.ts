@@ -19,8 +19,8 @@
  *   kv.del(key)                      -> { ok }
  *   sql.query(db, text, params = []) -> { ok, columns, rows, rowCount }     one read-only statement
  *   sql.execute(db, text, params=[]) -> { ok, changes, lastInsertRowId }   one write or schema statement
- *   seal.encrypt(value)             -> { ok, sealed }
- *   seal.decrypt(sealed)            -> { ok, value }
+ *   seal.encrypt(value, context)             -> { ok, sealed }
+ *   seal.decrypt(sealed, context)            -> { ok, value }
  *   file.save(name, body, opts?)     -> { ok }       offers the owner a file to save; opts: { type? }; see below
  */
 import { CAP_LIMITS, CAP_RESULT_TYPE, capError, type CapOp, type CapResult } from "./cap-protocol.js";
@@ -128,8 +128,12 @@ export const sql = Object.freeze({
 
 /** Seal and open JSON using the single key the app has permission to use. */
 export const seal = Object.freeze({
-  encrypt: (value: unknown): Promise<CapResult> => send("seal.encrypt", { value }),
-  decrypt: (sealed: unknown): Promise<CapResult> => (isText(sealed) ? send("seal.decrypt", { sealed }) : bad("The sealed value must be a string.")),
+  encrypt: (value: unknown, context: unknown): Promise<CapResult> =>
+    isText(context) ? send("seal.encrypt", { value, context }) : bad("The record key must be a string."),
+  decrypt: (sealed: unknown, context: unknown): Promise<CapResult> => {
+    if (!isText(sealed)) return bad("The sealed value must be a string.");
+    return isText(context) ? send("seal.decrypt", { sealed, context }) : bad("The record key must be a string.");
+  },
 });
 
 /**

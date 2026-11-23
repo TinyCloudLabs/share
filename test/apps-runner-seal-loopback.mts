@@ -77,12 +77,12 @@ await client.signInWithOpenKey(async ({ siwe }) => {
 assert.equal(approvals, 1);
 const session = client.session;
 assert.ok(session);
-const seal = await bindSeal(keyPath, {
+const space = client.space("applications");
+const seal = await bindSeal(keyPath, space.id, {
   address: session.address, chainId: session.chainId, walletAddress: session.address,
   sessionKey: session.sessionKey, siwe: session.siwe, signature: session.signature,
 }, () => client.keys);
 assert.ok(seal);
-const space = client.space("applications");
 const data = createAppData(space.kv, client.sqlForSpace(space.id));
 let reply: (result: CapResult) => void;
 const bridge = createCapabilityBridge({
@@ -97,7 +97,8 @@ function call(op: string, args: Record<string, unknown>): Promise<CapResult> {
   });
 }
 const value = { email: "alex@example.com", tags: ["Amis"], memo: "Écrire bientôt." };
-const encrypted = await call("seal.encrypt", { value });
+const context = `${appId}/person/alex`;
+const encrypted = await call("seal.encrypt", { value, context });
 assert.ok(encrypted.ok && typeof encrypted.sealed === "string", JSON.stringify(encrypted));
 assert.ok(!encrypted.sealed.includes(value.email));
 const written = await call("kv.put", { key: "person/alex", body: JSON.stringify({ name: "Alex", sealed: encrypted.sealed }) });
@@ -105,7 +106,24 @@ assert.equal(written.ok, true, JSON.stringify(written));
 const read = await call("kv.get", { key: "person/alex" });
 assert.ok(read.ok && read.bytes instanceof Uint8Array, JSON.stringify(read));
 const saved = JSON.parse(new TextDecoder().decode(read.bytes));
-assert.deepEqual(await call("seal.decrypt", { sealed: saved.sealed }), { ok: true, value });
+assert.deepEqual(await call("seal.decrypt", { sealed: saved.sealed, context }), { ok: true, value });
+const otherContext = `${appId}/person/another`;
+const moved = await call("seal.decrypt", { sealed: saved.sealed, context: otherContext });
+assert.ok(!moved.ok && moved.error.code === "CONTEXT_MISMATCH");
+const envelope = JSON.parse(saved.sealed);
+const forged = { ...envelope, aad: Buffer.from(JSON.stringify(["tinycloud.app.seal/v1", seal.ownerDid, space.id, otherContext])).toString("base64") };
+const retagged = await call("seal.decrypt", { sealed: JSON.stringify(forged), context: otherContext });
+assert.ok(!retagged.ok && retagged.error.code === "CONTEXT_MISMATCH");
+for (const [ownerDid, spaceId] of [
+  [sdk.pkhDid("0x0000000000000000000000000000000000000000", 1), space.id],
+  [seal.ownerDid, space.id.replace(":applications", ":other")],
+] as const) {
+  const header = JSON.stringify(["tinycloud.app.seal/v1", ownerDid, spaceId, context]);
+  const aad = new TextEncoder().encode(header);
+  const elsewhere = await client.keys.encrypt(keyPath, new TextEncoder().encode(`${header}\n${JSON.stringify(value)}`), { aad, keyWrapV2: true });
+  const refused = await call("seal.decrypt", { sealed: JSON.stringify(elsewhere), context });
+  assert.ok(!refused.ok && refused.error.code === "CONTEXT_MISMATCH");
+}
 assert.equal(approvals, 1);
 bridge.close();
-console.log("One exact-key grant and one versioned approval signed. Sealed JSON survived a KV write/read and opened with the packaged SDK and node.");
+console.log("One exact-key grant and one versioned approval signed. Sealed JSON survived a KV write/read and opened only with its authenticated context.");

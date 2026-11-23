@@ -6,20 +6,25 @@ import { SEAL_ABILITIES } from "./seal-key.ts";
 export interface BoundSeal {
   readonly keyPath: string;
   readonly networkId: string;
-  encrypt(bytes: Uint8Array): Promise<NamedKeyEnvelope>;
+  readonly ownerDid: string;
+  readonly spaceId: string;
+  encrypt(bytes: Uint8Array, aad: Uint8Array): Promise<NamedKeyEnvelope>;
   decrypt(envelope: NamedKeyEnvelope): Promise<Uint8Array>;
 }
 
 /** Bind the named-key client only to an exact owner-direct grant on the active session. */
 export async function bindSeal(
   keyPath: string,
+  spaceId: string,
   session: ClientSession | undefined,
   keys: () => Pick<NamedKeyClient, "ensureKey" | "encrypt" | "decrypt">,
 ): Promise<BoundSeal | undefined> {
   if (session === undefined) return undefined;
+  let ownerDid: string;
   let networkId: string;
   try {
-    networkId = `urn:tinycloud:encryption:${pkhDid(session.address, session.chainId)}:default`;
+    ownerDid = pkhDid(session.address, session.chainId);
+    networkId = `urn:tinycloud:encryption:${ownerDid}:default`;
     const recap = extractRecapAttenuations(session.siwe);
     const exact = recap[`${networkId}/${keyPath}`];
     const unrestricted = (ability: string) => exact?.[`tinycloud.encryption/${ability}`]?.some((caveat) =>
@@ -34,14 +39,16 @@ export async function bindSeal(
   return {
     keyPath,
     networkId,
-    async encrypt(bytes) {
+    ownerDid,
+    spaceId,
+    async encrypt(bytes, aad) {
       const client = keys();
       ready ??= client.ensureKey(keyPath, { networkId }).catch((error: unknown) => {
         ready = undefined;
         throw error;
       });
       await ready;
-      return client.encrypt(keyPath, bytes, { networkId, keyWrapV2: true });
+      return client.encrypt(keyPath, bytes, { networkId, keyWrapV2: true, aad });
     },
     decrypt: (envelope) => keys().decrypt(envelope),
   };

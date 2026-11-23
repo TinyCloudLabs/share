@@ -140,8 +140,8 @@ const KEYS: Record<CapOp, readonly string[]> = {
   "kv.del": ["key"],
   "sql.query": ["db", "sql", "params"],
   "sql.execute": ["db", "sql", "params"],
-  "seal.encrypt": ["value"],
-  "seal.decrypt": ["sealed"],
+  "seal.encrypt": ["value", "context"],
+  "seal.decrypt": ["sealed", "context"],
   "file.save": ["name", "type", "body"],
 };
 
@@ -177,6 +177,7 @@ function mapError(error: { readonly code?: string | undefined; readonly message?
 
 export const MAX_SEAL_JSON_BYTES = 256 * 1024;
 export const MAX_SEAL_ENVELOPE_BYTES = 384 * 1024;
+export const MAX_SEAL_CONTEXT_CHARS = 512;
 
 const CONTROL = /[\u0000-\u001f\u007f\\]/;
 
@@ -281,6 +282,15 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
   function prepareSeal(op: "seal.encrypt" | "seal.decrypt", args: Record<string, unknown>): Prepared | CapError {
     const seal = options.seal;
     if (seal === undefined) return fail("PERMISSION_DENIED", "This app needs permission to use its sealing key.");
+    const context = args["context"];
+    if (typeof context !== "string") return fail("BAD_REQUEST", "Give the app the full record key.");
+    if (context.length > MAX_SEAL_CONTEXT_CHARS) return fail("TOO_LARGE", "The record key is too long.");
+    if (!context.startsWith(root) || /[^a-zA-Z0-9/._~:+@=,-]/.test(context) || checkedPath(context, false) === undefined) {
+      return fail("BAD_REQUEST", "Give the app a valid record key in its own folder.");
+    }
+    const header = JSON.stringify(["tinycloud.app.seal/v1", seal.ownerDid, seal.spaceId, context]);
+    const aad = new TextEncoder().encode(header);
+    const expected = btoa(String.fromCharCode(...aad));
     if (op === "seal.encrypt") {
       let json: string;
       try {
@@ -294,8 +304,9 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
       }
       if (utf8Length(json) > MAX_SEAL_JSON_BYTES) return fail("TOO_LARGE", "The value is too large to encrypt.");
       return { run: async () => {
-        const envelope = await seal.encrypt(new TextEncoder().encode(json));
-        if (envelope.v !== 2 || envelope.keyPath !== seal.keyPath || envelope.networkId !== seal.networkId) {
+        // The context is also inside the encrypted payload and is checked before returning the value.
+        const envelope = await seal.encrypt(new TextEncoder().encode(`${header}\n${json}`), aad);
+        if (envelope.v !== 2 || envelope.keyPath !== seal.keyPath || envelope.networkId !== seal.networkId || envelope.aad !== expected) {
           return fail("INTERNAL", "The value could not be encrypted.");
         }
         const sealed = JSON.stringify(envelope);
@@ -315,6 +326,9 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
     if (envelope["keyPath"] !== seal.keyPath || envelope["networkId"] !== seal.networkId) {
       return fail("PERMISSION_DENIED", "This app can open data encrypted with its own key.");
     }
+    if (envelope["aad"] !== expected) {
+      return fail("CONTEXT_MISMATCH", "The encrypted value was made for a different record.");
+    }
     const named = envelope as unknown as NamedKeyEnvelope; // The SDK validates the encrypted fields.
     return { run: async () => {
       let bytes: Uint8Array;
@@ -328,9 +342,11 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
         }
         return fail("INTERNAL", "The encrypted value could not be opened.");
       }
-      if (bytes.byteLength > MAX_SEAL_JSON_BYTES) return fail("TOO_LARGE", "The encrypted value is too large to open.");
+      if (bytes.byteLength > MAX_SEAL_JSON_BYTES + aad.byteLength + 1) return fail("TOO_LARGE", "The encrypted value is too large to open.");
       try {
-        return { ok: true, value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown };
+        const plaintext = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+        if (!plaintext.startsWith(`${header}\n`)) return fail("CONTEXT_MISMATCH", "The encrypted value was made for a different record.");
+        return { ok: true, value: JSON.parse(plaintext.slice(header.length + 1)) as unknown };
       } catch {
         return fail("BAD_REQUEST", "The encrypted value does not contain JSON.");
       }
