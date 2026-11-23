@@ -296,4 +296,48 @@ describe("apps runner disables Web SDK grant keeping so updated bundles never in
     expect(reloadedClient.hasPermissions(kvSqlV1)).toBe(true);
     expect(testState.modalPrompts).toBe(1);
   }, 30_000);
+
+  it("signing out after clearing kept grants via a second BrowserSessionStorage leaves only a single retired: marker", async () => {
+    const ports = createRunPorts();
+    const sessionPrefix = await runnerSessionPrefix(entryV1.app_id);
+    const planV1 = appOpenPlan(entryV1);
+
+    const session = await ports.signIn(entryV1, bundleReadPlan(entryV1), hooks);
+    await session.authorize(entryV1, planV1, sdkCore);
+    await session.runtime.end();
+
+    const sdkStore = new BrowserSessionStorage({ keyPrefix: sessionPrefix });
+    expect(sdkStore.activeAddress()).toBeUndefined();
+    expect(sdkStore.exists(OWNER.address)).toBe(false);
+    expect(await sdkStore.loadRuntimeGrants(OWNER.address)).toEqual([]);
+
+    const runnerSdkKeys: string[] = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (key !== null && key.startsWith(sessionPrefix) && key !== `${sessionPrefix}-runtime-grants`) {
+        runnerSdkKeys.push(key);
+      }
+    }
+    expect(runnerSdkKeys).toHaveLength(1);
+    expect(runnerSdkKeys[0]).toMatch(new RegExp(`^${sessionPrefix}retired:${OWNER.address.toLowerCase()}:[^:]+$`));
+  }, 30_000);
+
+  it("propagates saveRuntimeGrants failure after requestPermissions instead of swallowing it", async () => {
+    const ports = createRunPorts();
+    const sessionPrefix = await runnerSessionPrefix(entryV1.app_id);
+    const planV1 = appOpenPlan(entryV1);
+
+    const session = await ports.signIn(entryV1, bundleReadPlan(entryV1), hooks);
+    const origSave = BrowserSessionStorage.prototype.saveRuntimeGrants;
+    const saveSpy = vi.spyOn(BrowserSessionStorage.prototype, "saveRuntimeGrants").mockImplementation(function (this: BrowserSessionStorage, address, grants) {
+      if (grants.length === 0) return Promise.reject(new Error("clear-grants-failed"));
+      return origSave.call(this, address, grants);
+    });
+    try {
+      await expect(session.authorize(entryV1, planV1, sdkCore)).rejects.toThrow("clear-grants-failed");
+      expect(storage.getItem(`${sessionPrefix}-runtime-grants`)).toBeNull();
+    } finally {
+      saveSpy.mockRestore();
+    }
+  }, 30_000);
 });

@@ -84,29 +84,10 @@ export async function runnerSessionPrefix(appId: string): Promise<string> {
  * updated bundle inherit an older version's kv/sql permissions across reloads.
  */
 async function clearSdkKeptRuntimeGrants(sessionPrefix: string, address?: string): Promise<void> {
-  const webSdk = await import("@tinycloud/web-sdk");
-  const StorageCtor = Object.prototype.hasOwnProperty.call(webSdk, "BrowserSessionStorage") ? webSdk.BrowserSessionStorage : undefined;
-  if (typeof StorageCtor !== "function") return;
-  const storage = new StorageCtor({ keyPrefix: sessionPrefix });
-  if (typeof storage.saveRuntimeGrants !== "function") return;
-  const addresses = new Set<string>();
-  if (address !== undefined) addresses.add(address);
-  const active = storage.activeAddress();
-  if (active !== undefined) addresses.add(active);
-  try {
-    const store = globalThis.localStorage;
-    if (store !== undefined) {
-      for (let i = 0; i < store.length; i += 1) {
-        const key = store.key(i);
-        if (key === null || !key.startsWith(sessionPrefix)) continue;
-        const suffix = key.slice(sessionPrefix.length);
-        if (/^0x[0-9a-f]{40}$/i.test(suffix)) addresses.add(suffix);
-      }
-    }
-  } catch {
-    // Storage enumeration may be blocked; activeAddress and explicit address above still run.
-  }
-  for (const target of addresses) await storage.saveRuntimeGrants(target, []);
+  const { BrowserSessionStorage } = await import("@tinycloud/web-sdk");
+  const storage = new BrowserSessionStorage({ keyPrefix: sessionPrefix });
+  const target = address ?? storage.activeAddress();
+  if (target !== undefined) await storage.saveRuntimeGrants(target, []);
 }
 
 /**
