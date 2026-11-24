@@ -17,7 +17,7 @@ import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js"
 import { createAppData } from "./app-data.ts";
 import { INSTALL_EXPIRY, INSTALL_EXPIRY_MS, INSTALL_SPACE, installRecordKey } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
-import { RunError, type PreparedApp, type PutResult, type RunFailure, type RunHooks, type RunPorts, type RunSession, type SignInPlan } from "./run.ts";
+import { RunError, failureDetail, type PreparedApp, type PutResult, type RunFailure, type RunHooks, type RunPorts, type RunSession, type SignInPlan } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
 import { BundleRefusal, INSTALL_RECORD_PATH, fetchVerifiedBundle } from "./bundle.ts";
 import { loadManifest } from "./manifest.ts";
@@ -342,7 +342,7 @@ export function createRunPorts(): RunPorts {
         } catch (error) {
           if (isAccountSetupRequired(error)) throw new RunError("setup-required", { cause: error, ...(typeof error.setupUrl === "string" ? { detail: error.setupUrl } : {}) });
           const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
-          const detail = error instanceof Error && error.message.length > 0 ? error.message : undefined;
+          const detail = failureDetail(error);
           throw new RunError(reason ?? "failed", { cause: error, ...(detail === undefined ? {} : { detail }) });
         }
       };
