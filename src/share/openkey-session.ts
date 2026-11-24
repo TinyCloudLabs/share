@@ -24,7 +24,7 @@ import { trackWalletApproval } from "./wallet-approval.js";
 import { SIGN_IN_NARROWED } from "./sender-failure.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 import { LIBRARY_SESSION_PREFIX } from "./library-session.js";
-import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, RENEWAL_RESTORE_UNAVAILABLE, renewalRestoreEnded, SIGN_IN_RENEWAL_ASK } from "./renewal-store.js";
+import { clearRenewalReceipt, hasRenewalReceipt, leaseFromApproval, RENEWAL_RESTORE_UNAVAILABLE, renewalRestoreEnded, SIGN_IN_RENEWAL_ASK, STANDING_RENEWAL_ASK } from "./renewal-store.js";
 
 export {
   accountRegistryReadPermissions,
@@ -319,11 +319,13 @@ export interface SignInWithManifestOptions extends ManifestScope {
   readonly versionedSignIn?: boolean;
   /**
    * With `versionedSignIn` and `persistSession`: ask OpenKey to offer the owner automatic renewal for up to 90 days
-   * (OpenKey shows its renewal box. The ask is a standing purpose, so the box starts ticked when the request needs no sensitive confirm, and the owner can untick it). When the owner leaves it ticked, the lease is checked, admitted by the session's node and
+   * (OpenKey shows its renewal box; the ask names no purpose, so the box starts unticked unless `renewalPurpose` says otherwise). When the owner leaves it ticked, the lease is checked, admitted by the session's node and
    * kept with the saved session, and a reload past the signed end restores through it. Without a lease the sign-in is a
    * finite one. Default false.
    */
   readonly renewal?: boolean;
+  /** With `renewal`: `"standing"` (an app's ongoing access) lets OpenKey's box start ticked when the request needs no sensitive confirm; the owner can untick it. */
+  readonly renewalPurpose?: "standing";
   /**
    * Waits, after sign-in and space hosting, for the SDK's background sync of the
    * account's own space registry, for at most `timeoutMs` (default 15 s). It
@@ -481,6 +483,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   // With renewal it also asks OpenKey to offer a lease (OpenKey does so beside `expiryChangeable`, while its leases are on) and holds what
   // comes back, with the time it arrived, for `admitSignInRenewal`.
   const renewalPrefix = options.renewal === true ? options.sessionPrefix ?? DEFAULT_SESSION_PREFIX : undefined;
+  const renewalAsk = options.renewalPurpose === "standing" ? STANDING_RENEWAL_ASK : SIGN_IN_RENEWAL_ASK;
   let approvalOutcome: { readonly renewal: unknown; readonly arrivedAt: number } | undefined;
   const versionedClient: OpenKeyAuthorizeTinyCloud = {
     authorizeTinyCloud: async (request, opts) => {
@@ -488,7 +491,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       if (renewalPrefix === undefined) return provider!.authorizeTinyCloud(request, opts);
       approvalOutcome = undefined;
       // `renewal` is on the request type of @openkey/sdk 0.13 and later; the node-sdk client type does not name it.
-      const asked = { ...request, renewal: SIGN_IN_RENEWAL_ASK };
+      const asked = { ...request, renewal: renewalAsk };
       const result = await provider!.authorizeTinyCloud(asked, opts);
       approvalOutcome = { renewal: leaseFromApproval(result), arrivedAt: performance.now() };
       return result;
@@ -709,6 +712,7 @@ export async function createTinyCloudClient(
   // Persisted under the library's own prefix for the SDK's sign-in session tier: a reload restores it, with no new
   // approval, until its signed expiry or until the sender signs out (which clears it). A revoked one is refused and
   // replaced by a fresh sign-in.
+  // The renewal ask names no purpose: OpenKey's box starts unticked, as the library opens encrypted shares.
   const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS, versionedSignIn: true, renewal: true });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;

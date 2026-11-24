@@ -100,11 +100,11 @@ beforeEach(() => {
 });
 
 describe("the library sign-in asks OpenKey for a renewal lease", () => {
-  it("sends the 90-day ask as a standing purpose (so the box starts ticked) and lets the owner change the expiry", async () => {
+  it("sends the 90-day ask with no purpose (so OpenKey's box starts unticked) and lets the owner change the expiry", async () => {
     await createTinyCloudClient(await authenticateWithOpenKey(() => undefined), CONFIG, () => undefined);
 
     expect(state.authorized[0]).toMatchObject({ protocolVersion: 1, renewal: SIGN_IN_RENEWAL_ASK });
-    expect((state.authorized[0] as { renewal?: unknown }).renewal).toEqual({ version: 1, leaseLifetimeSeconds: 90 * 86_400, purpose: "standing" });
+    expect((state.authorized[0] as { renewal?: unknown }).renewal).toEqual({ version: 1, leaseLifetimeSeconds: 90 * 86_400 });
     const openkey = state.clients[0]!.config.openkey as { mode: string; expiryChangeable: boolean; maxExpiresAt: () => number };
     expect(openkey.mode).toBe("iframe");
     expect(openkey.expiryChangeable).toBe(true);
