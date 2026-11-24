@@ -17,7 +17,7 @@ import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js"
 import { createAppData } from "./app-data.ts";
 import { INSTALL_EXPIRY, INSTALL_EXPIRY_MS, INSTALL_SPACE, installRecordKey } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
-import { RunError, type PreparedApp, type PutResult, type RunFailure, type RunHooks, type RunPorts, type RunSession, type SignInPlan } from "./run.ts";
+import { RunError, failureDetail, type PreparedApp, type PutResult, type RunFailure, type RunHooks, type RunPorts, type RunSession, type SignInPlan } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
 import { BundleRefusal, INSTALL_RECORD_PATH, fetchVerifiedBundle } from "./bundle.ts";
 import { loadManifest } from "./manifest.ts";
@@ -91,6 +91,11 @@ async function clearSdkKeptRuntimeGrants(sessionPrefix: string, address?: string
   // Not `activeAddress()`: that drops the pointer of a session past its signed end, which a renewal lease still restores.
   const target = address ?? storage.activeAddressForRenewal();
   if (target !== undefined) await storage.saveRuntimeGrants(target, []);
+}
+
+/** The SDK's `AccountSetupRequiredError`, matched by code so the page doesn't import the SDK to recognize it. */
+function isAccountSetupRequired(error: unknown): error is { code: "ACCOUNT_SETUP_REQUIRED"; setupUrl?: unknown } {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ACCOUNT_SETUP_REQUIRED";
 }
 
 /**
@@ -328,14 +333,16 @@ export function createRunPorts(): RunPorts {
             restoreBeforeOpenKey: restore,
             sessionPrefix,
             persistSession: true,
+            // Every runner sign-in goes through OpenKey's versioned approval (`authorizeTinyCloud`), the narrow reopen too.
             // The narrow reopen asks for no renewal: its grant is only `install.json`, and the app's own grant comes after it.
-            versionedSignIn: requested.narrow !== true,
+            versionedSignIn: true,
             renewal: requested.narrow !== true,
             expiry: RUNTIME_SESSION_MS,
           });
         } catch (error) {
+          if (isAccountSetupRequired(error)) throw new RunError("setup-required", { cause: error, ...(typeof error.setupUrl === "string" ? { detail: error.setupUrl } : {}) });
           const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
-          const detail = error instanceof Error && error.message.length > 0 ? error.message : undefined;
+          const detail = failureDetail(error);
           throw new RunError(reason ?? "failed", { cause: error, ...(detail === undefined ? {} : { detail }) });
         }
       };

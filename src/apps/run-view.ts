@@ -45,6 +45,8 @@ interface Screen {
   readonly repairHref?: string | undefined;
   /** Where "Uninstall" goes (the apps page's details sheet), for a version that can't be repaired from here. */
   readonly uninstallHref?: string | undefined;
+  /** Where "Finish setting up" goes (the account setup page), for an account that isn't set up yet. */
+  readonly setupHref?: string | undefined;
   readonly tone?: Tone;
 }
 
@@ -81,8 +83,24 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
     case "timeout": return { title: "OpenKey didn't answer in time", lines: ["Nothing was started. Try again."], retry: OPEN_AGAIN(name) };
     case "busy": return { title: "Another OpenKey request is waiting", lines: ["Finish or cancel it, then try again."], retry: OPEN_AGAIN(name) };
     case "wrong-account": return { title: "That approval came from a different account", lines: ["It wasn't the account that signed in, so nothing was started."], retry: OPEN_AGAIN(name), tone: "danger" };
+    case "setup-required": {
+      const setupHref = setupAddress(detail);
+      return {
+        title: "Finish setting up your TinyCloud account",
+        lines: ["This account isn't set up yet, so apps can't open in it. Nothing was started."],
+        retry: OPEN_AGAIN(name), ...(setupHref === undefined ? {} : { setupHref }),
+      };
+    }
     case "failed": return { title: "We couldn't open this app", lines: ["Nothing was started. Try again."], retry: OPEN_AGAIN(name), detail };
   }
+}
+
+/** TinyCloud's account setup pages: the SDK's `setupUrl` (tinycloud.one) and the setup app OpenKey's guide names. */
+const SETUP_ORIGINS: readonly string[] = ["https://tinycloud.one", "https://home.tinycloud.xyz"];
+
+/** `value` only when it is on a TinyCloud setup origin, so a thrown value can't make the link point anywhere else. */
+function setupAddress(value: string | undefined): string | undefined {
+  return value !== undefined && URL.canParse(value) && SETUP_ORIGINS.includes(new URL(value).origin) ? value : undefined;
 }
 
 /** Status line for each step of an open. */
@@ -216,8 +234,9 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     const parts: HTMLElement[] = [heading, ...screen.lines.map((line) => el("p", null, [line]))];
     if (screen.detail !== undefined) parts.push(el("p", "run-screen__detail", [el("code", null, [screen.detail])]));
     const actions: HTMLElement[] = [];
+    if (screen.setupHref !== undefined) actions.push(el("a", "tc-button tc-button--primary apps-button", ["Finish setting up"], { href: screen.setupHref }));
     if (screen.retry !== undefined && onRetry !== undefined) {
-      const retry = el("button", "tc-button tc-button--primary apps-button", [screen.retry], { type: "button" });
+      const retry = el("button", `tc-button${actions.length === 0 ? " tc-button--primary" : ""} apps-button`, [screen.retry], { type: "button" });
       retry.addEventListener("click", onRetry);
       actions.push(retry);
     }

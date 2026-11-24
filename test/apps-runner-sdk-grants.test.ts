@@ -3,15 +3,16 @@ import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import * as sdkCore from "@tinycloud/sdk-core";
 import { BrowserSessionStorage, TinyCloudWeb, type PermissionEntry, type PortableDelegation } from "@tinycloud/web-sdk";
 import { NodeWasmBindings } from "@tinycloud/node-sdk";
+import { OpenKey, OpenKeyProvider } from "@openkey/sdk";
 import { catalog } from "../src/apps/catalog.ts";
 import { openManifest, openScope } from "../src/apps/grants.ts";
-import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
-import type { RunHooks, SignInPlan } from "../src/apps/run.ts";
+import { INSTALL_SPACE, installRecordKey } from "../src/apps/install-plan.ts";
+import { installRecordPlan, type RunHooks, type SignInPlan } from "../src/apps/run.ts";
 import { createRunPorts, runnerSessionPrefix } from "../src/apps/run-session.ts";
 
 const OWNER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -357,5 +358,124 @@ describe("apps runner disables Web SDK grant keeping so updated bundles never in
     } finally {
       saveSpy.mockRestore();
     }
+  }, 30_000);
+});
+
+describe("the runner's sign-in goes through OpenKey's versioned authorizeTinyCloud", () => {
+  let server: Server;
+  // Call-through spies: what OpenKey was asked, and the TinyCloudWeb the runner created (each restores first).
+  let authorizeSpy: MockInstance<OpenKey["authorizeTinyCloud"]>;
+  let signMessageSpy: MockInstance<OpenKey["signMessage"]>;
+  let providerSpy: MockInstance<OpenKeyProvider["request"]>;
+  let restoreSpy: MockInstance<TinyCloudWeb["restoreSession"]>;
+
+  /** Every SIWE sign-in OpenKey was asked to sign byte-exact, through `signMessage` or the provider's `personal_sign`. */
+  function rawSignIns(): string[] {
+    const signed = [
+      ...signMessageSpy.mock.calls.map(([input]) => input.message),
+      ...providerSpy.mock.calls.filter(([args]) => args.method === "personal_sign").map(([args]) => Buffer.from(String(args.params?.[0]).slice(2), "hex").toString("utf8")),
+    ];
+    return signed.filter((message) => message.includes("wants you to sign in with your Ethereum account"));
+  }
+
+  beforeEach(async () => {
+    testState.modalPrompts = 0;
+    const storage = makeMemoryStorage();
+    Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
+    Object.defineProperty(globalThis, "window", { value: { location: { origin: "https://share.tinycloud.xyz", host: "share.tinycloud.xyz" }, localStorage: storage, crypto: globalThis.crypto }, configurable: true });
+
+    const protocol = new NodeWasmBindings().protocolVersion();
+    server = createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      request.resume();
+      response.setHeader("content-type", "application/json");
+      if (url.pathname === "/info") {
+        response.end(JSON.stringify({ protocol, version: "0.0.0-test", nodeId: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", features: [] }));
+      } else if (url.pathname.startsWith("/registry/")) {
+        response.statusCode = 404;
+        response.end('{"error":"location record not found"}');
+      } else if (request.method === "POST" && url.pathname.endsWith("/delegate")) {
+        response.end(JSON.stringify({ cid: "bafy-test", activated: [], skipped: [] }));
+      } else if (url.pathname.endsWith("/invoke")) {
+        response.end(JSON.stringify([]));
+      } else {
+        response.end(JSON.stringify({ ok: true }));
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    testState.nodeOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    authorizeSpy = vi.spyOn(OpenKey.prototype, "authorizeTinyCloud");
+    signMessageSpy = vi.spyOn(OpenKey.prototype, "signMessage");
+    providerSpy = vi.spyOn(OpenKeyProvider.prototype, "request");
+    restoreSpy = vi.spyOn(TinyCloudWeb.prototype, "restoreSession");
+  });
+
+  afterEach(async () => {
+    for (const spy of [authorizeSpy, signMessageSpy, providerSpy, restoreSpy]) spy.mockRestore();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("manifest grant: a first open signs the app's grant through authorizeTinyCloud v1 with the renewal ask, and its kv/sql needs no second approval", async () => {
+    const plan = appOpenPlan(entryV1);
+    const opened = await createRunPorts().signIn(entryV1, plan, hooks);
+
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+    const [request] = authorizeSpy.mock.calls[0]!;
+    expect(request.protocolVersion).toBe(1);
+    expect(request.renewal).toBeDefined();
+    expect(rawSignIns()).toEqual([]);
+    // The spy's `this` is the runner's TinyCloudWeb; MockInstance does not carry the method's `this` type.
+    const client = restoreSpy.mock.contexts[0] as TinyCloudWeb;
+    expect(client.session()?.siwe).toBe(request.siwe);
+
+    await opened.authorize(entryV1, plan, sdkCore);
+    expect(client.hasPermissions(runtimeKvSqlPermissionsOf(plan.manifest, entryV1.app_id))).toBe(true);
+    expect(testState.modalPrompts).toBe(0);
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it("runtime session: kv/sql the versioned sign-in did not carry is asked for once on that session, with no second OpenKey sign-in", async () => {
+    const plan = appOpenPlan(entryV1);
+    const kvSql = runtimeKvSqlPermissionsOf(plan.manifest, entryV1.app_id);
+    const opened = await createRunPorts().signIn(entryV1, bundleReadPlan(entryV1), hooks);
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+    expect(authorizeSpy.mock.calls[0]![0].protocolVersion).toBe(1);
+    expect(rawSignIns()).toEqual([]);
+    const client = restoreSpy.mock.contexts[0] as TinyCloudWeb;
+    expect(client.hasPermissions(kvSql)).toBe(false);
+
+    // The runtime grant is the SDK's own wallet-signed delegation to this session key (`requestPermissions`; byte-exact, the SDK has no versioned path for it), not a new sign-in.
+    await opened.authorize(entryV1, plan, sdkCore);
+    expect(testState.modalPrompts).toBe(1);
+    expect(client.hasPermissions(kvSql)).toBe(true);
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+    expect(client.session()?.siwe).toBe(authorizeSpy.mock.calls[0]![0].siwe);
+  }, 30_000);
+
+  it("install lookup: a reopen restores the saved session without OpenKey; with nothing to restore it asks authorizeTinyCloud v1 for install.json only, without renewal", async () => {
+    const ports = createRunPorts();
+    const first = await ports.signIn(entryV1, appOpenPlan(entryV1), hooks);
+    await first.runtime.detach();
+    authorizeSpy.mockClear();
+
+    await ports.signIn(entryV1, installRecordPlan(entryV1), hooks);
+    // Each client restores twice (before OpenKey, then inside `signIn`): the second distinct one is the reopen's.
+    const reopened = [...new Set(restoreSpy.mock.contexts)][1] as TinyCloudWeb;
+    expect(reopened.sessionRestoreStatus).toBe("restored");
+    expect(authorizeSpy).not.toHaveBeenCalled();
+
+    localStorage.clear();
+    // Only the request is looked at: reading the app's files is outside the lookup's install.json grant, so this open does not get past them.
+    await ports.signIn(entryV1, installRecordPlan(entryV1), hooks).catch(() => undefined);
+    expect(authorizeSpy).toHaveBeenCalledTimes(1);
+    const [request] = authorizeSpy.mock.calls[0]!;
+    expect(request.protocolVersion).toBe(1);
+    expect(request.renewal).toBeUndefined();
+    const kvGrants = Object.entries(sdkCore.extractRecapAttenuations(request.siwe))
+      .flatMap(([resource, actions]) => Object.keys(actions).filter((action) => action.startsWith("tinycloud.kv/")).map((action) => `${action} ${sdkCore.parseCanonicalRecapResource(resource).path}`));
+    expect(kvGrants).toEqual([`tinycloud.kv/get ${installRecordKey(entryV1.app_id)}`]);
+    expect(rawSignIns()).toEqual([]);
   }, 30_000);
 });

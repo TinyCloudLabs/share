@@ -388,6 +388,28 @@ describe("opening an app that cannot run", () => {
     expect(root.querySelector(".run-screen__title")?.textContent).toBe("We couldn't open this app");
     expect(fake.runtimes).toBe(0);
   });
+  it("shows an OpenKey refusal's code and message on the failure screen, not the generic screen with nothing", async () => {
+    const fake = fakePorts();
+    fake.ports.signIn = async () => { throw { code: "TERMS_NOT_ACCEPTED", message: "Accept OpenKey's terms first", token: "secret-token-value" }; };
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__detail code")?.textContent).toBe("TERMS_NOT_ACCEPTED: Accept OpenKey's terms first"));
+    expect(root.textContent).not.toContain("secret-token-value");
+    expect(fake.runtimes).toBe(0);
+  });
+  it("an account that isn't set up gets a setup screen that links to the setup address, not the generic failure", async () => {
+    const fake = fakePorts({ readError: new RunError("setup-required", { detail: "https://tinycloud.one/" }) });
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("Finish setting up your TinyCloud account"));
+    const setup = [...root.querySelectorAll("a")].find((link) => link.textContent === "Finish setting up");
+    expect(setup?.getAttribute("href")).toBe("https://tinycloud.one/");
+    expect(button("Open Health Log again")).toBeTruthy();
+    expect(root.querySelector(".run-screen__detail")).toBeNull();
+    expect(fake.runtimes).toBe(0);
+  });
+
+  it.each(["javascript:alert(1)", "http://tinycloud.one/", "https://tinycloud.one.example/", "https://evil.example/setup"])("never links a setup address off TinyCloud's setup origins (%s)", (address) => {
+    expect(failureScreen("setup-required", "X", address).setupHref).toBeUndefined();
+  });
 
 
 });

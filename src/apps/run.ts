@@ -121,6 +121,8 @@ export type RunFailure =
   | "timeout"
   | "busy"
   | "wrong-account"
+  /** The account has no TinyCloud registry record yet; `detail` is the SDK's setup address. */
+  | "setup-required"
   | "failed";
 
 export class RunError extends Error {
@@ -132,6 +134,23 @@ export class RunError extends Error {
     this.reason = reason;
     this.detail = options.detail;
   }
+}
+
+/** Longest `detail` taken from a non-Error rejection. */
+export const FAILURE_DETAIL_MAX = 200;
+
+/**
+ * The note a failure screen shows for a thrown value: an Error's message, or for a plain object (OpenKey rejects with
+ * `{ code, message }`) only its `code` and `message`, capped at {@link FAILURE_DETAIL_MAX}. No other field is read.
+ */
+export function failureDetail(error: unknown): string | undefined {
+  if (error instanceof Error) return error.message.length > 0 ? error.message : undefined;
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = "code" in error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : "";
+  const message = "message" in error && typeof error.message === "string" ? error.message : "";
+  const detail = code.length > 0 && message.length > 0 ? `${code}: ${message}` : code || message;
+  if (detail.length === 0) return undefined;
+  return detail.length > FAILURE_DETAIL_MAX ? `${detail.slice(0, FAILURE_DETAIL_MAX - 1)}…` : detail;
 }
 
 export type RunProgress =
@@ -255,7 +274,7 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   report({ phase: "reading", approval: false });
   const session = await ports.signIn(currentEntry, initialPlan, { approval: (open) => report({ phase: "reading", approval: open }) }).catch((cause: unknown) => {
     if (cause instanceof RunError) throw cause;
-    const detail = cause instanceof Error && cause.message.length > 0 ? cause.message : undefined;
+    const detail = failureDetail(cause);
     throw new RunError("failed", { cause, ...(detail === undefined ? {} : { detail }) });
   });
   let app: RunnableApp;
