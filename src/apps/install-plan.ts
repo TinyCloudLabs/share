@@ -5,11 +5,12 @@
  *
  * Opening an app saves its files under `<app_id>/app/` and `<app_id>/knowledge/`
  * in the `applications` space (run.ts, run-session.ts). Order: the app's files,
- * then `install.json` (the commit point for the app's files), then the notes.
- * A folder with `install.json` and every app file is complete.
+ * then the notes, then `install.json` (the commit point), which records the notes
+ * it saw written. A folder with `install.json` and every app file is complete.
  */
-import { INSTALL_RECORD_PATH } from "./bundle.ts";
+import { INSTALL_RECORD_PATH, sha256Hex } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
+import type { InstallRecord } from "./stored-app.ts";
 
 export const INSTALL_SPACE = "applications";
 /** Expiry of the install, repair and uninstall sessions. The runner's open has its own, longer one (grants.ts). Everything below derives from this one constant. */
@@ -37,12 +38,12 @@ export function installRecordKey(appId: string): string {
   return `${appId}/app/${INSTALL_RECORD_PATH}`;
 }
 
-/** The notes' index: the last file written, so its presence means every note is in place. */
+/** The notes' index: sorted last among the notes. */
 export const KNOWLEDGE_INDEX = "knowledge/index.md";
 
 /**
  * The order an app's files are written in: the app's files, sorted by path, then the notes, sorted by path with the index last.
- * `install.json` is not in this list: the caller writes it after the app's files and before the notes (the commit point).
+ * `install.json` is not in this list: the caller writes it last, after the notes (the commit point).
  */
 export function installOrder<T extends { path: string }>(files: readonly T[]): T[] {
   const byPath = (a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
@@ -75,10 +76,24 @@ export const REGISTRY_RESOURCES: readonly RequestedResource[] = [
   { service: "tinycloud.capabilities", space: "account", path: "", actions: ["tinycloud.capabilities/read"] },
 ];
 
-/** What `<app_id>/app/install.json` holds: where the files came from, which bundle, and when. */
-export function installRecord(entry: CatalogEntry, installedAt: Date): Uint8Array {
-  const record = { source: { repo: entry.source.repo, tag: entry.source.tag, commit: entry.source.commit }, digest: entry.bundle.digest, installed_at: installedAt.toISOString() };
-  return new TextEncoder().encode(`${JSON.stringify(record, null, 2)}\n`);
+/**
+ * Which notes a bundle carries: sha256 over its catalog-pinned `knowledge/` files (path, sha256 and size, sorted by path).
+ * `install.json` records it once those notes are written, so a reopen writes them again only when this changes.
+ */
+export async function notesVersion(entry: CatalogEntry): Promise<string> {
+  const pins = entry.bundle.files.filter((file) => file.path.startsWith("knowledge/")).map((file) => [file.path, file.sha256, file.size] as const).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  return sha256Hex(new TextEncoder().encode(JSON.stringify(pins)));
+}
+
+/** `<app_id>/app/install.json`'s bytes: where the files came from, which bundle, when, and (`notes`) which notes were written. */
+export function encodeInstallRecord(record: InstallRecord): Uint8Array {
+  const json = { source: { repo: record.source.repo, tag: record.source.tag, commit: record.source.commit }, digest: record.digest, installed_at: record.installedAt, ...(record.notes === undefined ? {} : { notes: record.notes }) };
+  return new TextEncoder().encode(`${JSON.stringify(json, null, 2)}\n`);
+}
+
+/** What `<app_id>/app/install.json` holds for a new install of `entry`. */
+export function installRecord(entry: CatalogEntry, installedAt: Date, notes?: string): Uint8Array {
+  return encodeInstallRecord({ source: entry.source, digest: entry.bundle.digest, installedAt: installedAt.toISOString(), ...(notes === undefined ? {} : { notes }) });
 }
 
 /** Where "Open" goes: the runner page for an app. */

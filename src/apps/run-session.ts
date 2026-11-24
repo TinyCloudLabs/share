@@ -129,9 +129,9 @@ interface ReaderKv {
   createSignedReadUrl(key: string, options: { expiresInSeconds: number }): Promise<{ ok: true; data: { url: string } } | { ok: false; error: { code?: string } }>;
 }
 
-/** The part of the SDK's key-value service the install write uses. */
+/** The part of the SDK's key-value service the install writes use. */
 interface WriterKv {
-  put(key: string, value: Uint8Array, options: { contentType: string; ifNoneMatch: "*" }): Promise<{ ok: true } | { ok: false; error: { code?: string } }>;
+  put(key: string, value: Uint8Array, options: { contentType: string; ifNoneMatch?: "*" }): Promise<{ ok: true } | { ok: false; error: { code?: string } }>;
 }
 
 /** Create-only write: created, or already there and left as it is. Any other failure is a failed open, never a silent skip. */
@@ -140,6 +140,12 @@ export async function putCreateOnly(kv: WriterKv, key: string, bytes: Uint8Array
   if (written.ok) return "created";
   if (written.error.code === "KV_PRECONDITION_FAILED") return "exists";
   throw new RunError("failed", { detail: `save ${key}: ${written.error.code ?? "error"}` });
+}
+
+/** Overwrite: only for `install.json`'s notes record. Any failure is a failed open. */
+export async function putReplace(kv: WriterKv, key: string, bytes: Uint8Array, contentType: string): Promise<void> {
+  const written = await kv.put(key, bytes, { contentType });
+  if (!written.ok) throw new RunError("failed", { detail: `save ${key}: ${written.error.code ?? "error"}` });
 }
 
 /** The part of `fetch` the reader uses (the page's own `fetch`, or a fake in tests). */
@@ -418,6 +424,7 @@ export function createRunPorts(): RunPorts {
         files,
         authorize,
         put: (key, bytes, contentType): Promise<PutResult> => putCreateOnly(space.kv, key, bytes, contentType),
+        replace: (key, bytes, contentType): Promise<void> => putReplace(space.kv, key, bytes, contentType),
         runtime: {
           get data() { return createAppData(space.kv, signedIn.tinycloud.sqlForSpace(space.id)); },
           sealFor: (keyPath) => authorized && boundSeal?.keyPath === keyPath ? boundSeal : undefined,

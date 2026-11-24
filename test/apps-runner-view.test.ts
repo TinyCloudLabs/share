@@ -83,6 +83,7 @@ function fakePorts(overrides: { stored?: StoredOverrides; installedEntry?: Catal
         files: storedFiles(overrides.installedEntry ?? candidate, overrides.stored),
         authorize: async (installed) => { fake.signedDigest = installed.bundle.digest; },
         put: async () => "created" as const,
+        replace: async () => undefined,
         runtime,
       };
     },

@@ -144,8 +144,9 @@ export function kvFolderPermission(path: string, actions: Array<"get" | "list" |
 }
 
 /**
- * The one sign-in an open makes: the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`,
- * and create-only `put` on `<app_id>/knowledge/`. Built from the catalog manifest so the request is known before OpenKey opens;
+ * The one sign-in an open makes: the catalog's runtime grants, plus `get`, `list` and `put` on `<app_id>/app/` (used create-only,
+ * `ifNoneMatch: "*"`, except for the install.json rewrite that records the notes version: create-only is per write, not in the grant),
+ * and `put` on `<app_id>/knowledge/` (used create-only). Built from the catalog manifest so the request is known before OpenKey opens;
  * the saved copy is checked against it afterwards and only the bridge's allow-list (makeAuthorizer on the capped copy) reaches the frame.
  */
 export function openManifest(catalog: Manifest): Manifest {
