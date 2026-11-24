@@ -328,8 +328,9 @@ export function createRunPorts(): RunPorts {
             restoreBeforeOpenKey: restore,
             sessionPrefix,
             persistSession: true,
+            // Every runner sign-in goes through OpenKey's versioned approval (`authorizeTinyCloud`), the narrow reopen too.
             // The narrow reopen asks for no renewal: its grant is only `install.json`, and the app's own grant comes after it.
-            versionedSignIn: requested.narrow !== true,
+            versionedSignIn: true,
             renewal: requested.narrow !== true,
             expiry: RUNTIME_SESSION_MS,
           });

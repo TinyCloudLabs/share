@@ -84,7 +84,7 @@ it("re-signs once with the selected full manifest and renewal when a narrow reop
   vi.mocked(signInWithManifest).mockResolvedValueOnce(old).mockReturnValueOnce(pending);
   const opened = await createRunPorts().signIn(entry, narrowed, { approval: vi.fn() });
   expect(signInWithManifest).toHaveBeenNthCalledWith(1, expect.objectContaining({
-    manifest: narrowed.manifest, restoreBeforeOpenKey: true, versionedSignIn: false, renewal: false,
+    manifest: narrowed.manifest, restoreBeforeOpenKey: true, versionedSignIn: true, renewal: false,
   }));
   const authorizing = opened.authorize(entry, selected, sdk);
   await vi.waitFor(() => expect(signInWithManifest).toHaveBeenNthCalledWith(2, expect.objectContaining({

@@ -507,7 +507,7 @@ describe("runner renewal", () => {
 
     const { session } = await open();
     expect(ordinaryRestores).toHaveBeenCalledTimes(1);
-    expect(versionedSignIns).toHaveBeenCalledExactlyOnceWith(false);
+    expect(versionedSignIns).toHaveBeenCalledExactlyOnceWith(true);
     expect(connections).not.toHaveBeenCalled();
     expect(authorizations).toEqual([]);
     await session.detach();
