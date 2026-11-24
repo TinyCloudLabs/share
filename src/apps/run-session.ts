@@ -93,6 +93,11 @@ async function clearSdkKeptRuntimeGrants(sessionPrefix: string, address?: string
   if (target !== undefined) await storage.saveRuntimeGrants(target, []);
 }
 
+/** The SDK's `AccountSetupRequiredError`, matched by code so the page doesn't import the SDK to recognize it. */
+function isAccountSetupRequired(error: unknown): error is { code: "ACCOUNT_SETUP_REQUIRED"; setupUrl?: unknown } {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ACCOUNT_SETUP_REQUIRED";
+}
+
 /**
  * Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. The runner's
  * authorization is interactive (a first open can spend minutes in OpenKey's modal), so a signature waits as long as a
@@ -335,6 +340,7 @@ export function createRunPorts(): RunPorts {
             expiry: RUNTIME_SESSION_MS,
           });
         } catch (error) {
+          if (isAccountSetupRequired(error)) throw new RunError("setup-required", { cause: error, ...(typeof error.setupUrl === "string" ? { detail: error.setupUrl } : {}) });
           const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
           const detail = error instanceof Error && error.message.length > 0 ? error.message : undefined;
           throw new RunError(reason ?? "failed", { cause: error, ...(detail === undefined ? {} : { detail }) });

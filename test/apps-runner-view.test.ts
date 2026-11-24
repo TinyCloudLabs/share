@@ -388,6 +388,20 @@ describe("opening an app that cannot run", () => {
     expect(root.querySelector(".run-screen__title")?.textContent).toBe("We couldn't open this app");
     expect(fake.runtimes).toBe(0);
   });
+  it("an account that isn't set up gets a setup screen that links to the setup address, not the generic failure", async () => {
+    const fake = fakePorts({ readError: new RunError("setup-required", { detail: "https://tinycloud.one/" }) });
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("Finish setting up your TinyCloud account"));
+    const setup = [...root.querySelectorAll("a")].find((link) => link.textContent === "Finish setting up");
+    expect(setup?.getAttribute("href")).toBe("https://tinycloud.one/");
+    expect(button("Open Health Log again")).toBeTruthy();
+    expect(root.querySelector(".run-screen__detail")).toBeNull();
+    expect(fake.runtimes).toBe(0);
+  });
+
+  it("never links a setup address that isn't https", () => {
+    expect(failureScreen("setup-required", "X", "javascript:alert(1)").setupHref).toBeUndefined();
+  });
 
 
 });

@@ -121,6 +121,8 @@ export type RunFailure =
   | "timeout"
   | "busy"
   | "wrong-account"
+  /** The account has no TinyCloud registry record yet; `detail` is the SDK's setup address. */
+  | "setup-required"
   | "failed";
 
 export class RunError extends Error {
