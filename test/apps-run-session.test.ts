@@ -9,11 +9,11 @@ type WebSdkModule = typeof import("@tinycloud/web-sdk");
 
 import { catalog } from "../src/apps/catalog.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
-import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
+import { INSTALL_SPACE, notesVersion } from "../src/apps/install-plan.ts";
 import { type PreparedApp, type RunPorts, installRecordPlan, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
 import { isSignInLabel } from "../src/share/sign-in-label.ts";
-import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
+import { type StoredOverrides, bundleBytes, installRecordBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const SIBLING = "xyz.tinycloud.sample.healthlog2";
@@ -301,6 +301,7 @@ describe("readSavedFiles: bounded, never silently cut", () => {
 
 describe("opening an installed app", () => {
   it("a repeat open signs in once, reads the saved copy, and writes no app file", async () => {
+    seedSaved({ files: { "install.json": installRecordBytes(entry, { notes: await notesVersion(entry) }) } });
     const app = await open();
     expect(calls).toHaveLength(1);
     expect(puts.filter((key) => key.startsWith(`${HEALTH}/app/`))).toEqual([]);

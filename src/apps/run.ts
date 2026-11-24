@@ -13,7 +13,7 @@ import { type ManifestSdk, openManifest, openScope } from "./grants.ts";
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { INSTALL_RECORD_PATH, type VerifiedBundle } from "./bundle.ts";
 import { type ManifestResult } from "./manifest.ts";
-import { contentTypeOf, installKey, installOrder, installRecord, installRecordKey } from "./install-plan.ts";
+import { contentTypeOf, encodeInstallRecord, installKey, installOrder, installRecord, installRecordKey, notesVersion } from "./install-plan.ts";
 import { type RunnableApp, type StoredAppFailure, type StoredFiles, parseInstallRecord, pinProblem, verifyStoredApp } from "./stored-app.ts";
 
 export interface RunHooks {
@@ -56,6 +56,8 @@ export interface RunSession {
   readonly authorize: (entry: CatalogEntry, plan: SignInPlan, sdk: ManifestSdk) => Promise<void>;
   /** Create-only write under the app's folder and notes. */
   readonly put: (key: string, bytes: Uint8Array, contentType: string) => Promise<PutResult>;
+  /** Overwrites `key`: only `install.json`, to record the notes an older record did not. */
+  readonly replace: (key: string, bytes: Uint8Array, contentType: string) => Promise<void>;
   readonly runtime: RuntimeSession;
 }
 
@@ -195,16 +197,22 @@ export function signInPlan(loaded: ManifestResult, sdk: ManifestSdk): SignInPlan
 /**
  * Writes what is missing from the saved copy, create-only, inside the sign-in. Returns the files as they now stand.
  * A saved copy recorded for another digest is left alone: verification then refuses it, nothing is written into it.
- * Order: the app's files (each one not already saved), then `install.json` (only when no record is saved, and only once the saved
- * code files pass `pinProblem`, the same check as the open), then the notes with `knowledge/index.md` last. Nothing is cleaned up on failure.
+ * Order: the app's files (each one not already saved); then, only when no record is saved, a check that the saved code files pass
+ * `pinProblem` (the same check as the open); then the notes, all at once, unless the saved record says these notes were written;
+ * then `install.json` with the notes' version: created when no record is saved, rewritten (same source, digest and date) when
+ * only the notes were due. A note that is already there is kept as it is. Nothing is cleaned up on failure.
  */
-async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: StoredFiles, put: RunSession["put"], report: (progress: RunProgress) => void, signal: AbortSignal | undefined): Promise<StoredFiles> {
+async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: StoredFiles, session: Pick<RunSession, "put" | "replace">, report: (progress: RunProgress) => void, signal: AbortSignal | undefined): Promise<StoredFiles> {
   const recordBytes = files.entries.get(INSTALL_RECORD_PATH);
-  if (recordBytes !== undefined && parseInstallRecord(recordBytes)?.digest !== entry.bundle.digest) return files;
+  const saved = recordBytes === undefined ? undefined : parseInstallRecord(recordBytes);
+  if (saved === null || (saved !== undefined && saved.digest !== entry.bundle.digest)) return files;
   const entries = new Map(files.entries);
   const order = installOrder(bundle.files);
   const appFiles = order.filter((file) => !file.path.startsWith("knowledge/"));
   const notes = order.filter((file) => file.path.startsWith("knowledge/"));
+  const notesWritten = await notesVersion(entry);
+  // A record without notes to write is not rewritten just to name the empty version.
+  const notesDue = saved === undefined || (notes.length > 0 && saved.notes !== notesWritten);
   const total = order.length + 1;
   let done = 0;
   try {
@@ -213,30 +221,37 @@ async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: S
       // Already saved: kept, never rewritten.
       if (entries.has(file.path)) { done += 1; continue; }
       report({ phase: "saving", done, total });
-      const result = await put(installKey(entry.app_id, file.path), file.bytes, contentTypeOf(file.path));
+      const result = await session.put(installKey(entry.app_id, file.path), file.bytes, contentTypeOf(file.path));
       // Listed and read a moment ago, now present but not in the read: the copy changed under the open, so refuse rather than guess.
       if (result === "exists") throw new RunError("failed", { detail: "saved files changed while opening" });
       entries.set(file.path, file.bytes);
       done += 1;
     }
-    if (recordBytes === undefined) {
-      // Commit guard: install.json is written only over a copy that verification would accept.
+    if (saved === undefined) {
+      // Commit guard: nothing more is written, install.json included, unless verification would accept the code.
       const problem = await pinProblem(entry, { entries, ...(files.incomplete === undefined ? {} : { incomplete: files.incomplete }) });
       if (problem !== undefined) throw new RunError("damaged", { detail: `${problem}, so install.json was not written` });
-      if (signal?.aborted) throw new RunError("cancelled");
+    }
+    if (!notesDue) return { entries, ...(files.incomplete === undefined ? {} : { incomplete: files.incomplete }) };
+    if (signal?.aborted) throw new RunError("cancelled");
+    report({ phase: "saving", done, total });
+    // Create-only, all at once: a note already saved is left as it is, so the write result is not checked.
+    await Promise.all(notes.map(async (file) => {
+      await session.put(installKey(entry.app_id, file.path), file.bytes, contentTypeOf(file.path));
+      done += 1;
       report({ phase: "saving", done, total });
-      const record = installRecord(entry, new Date());
-      const written = await put(installRecordKey(entry.app_id), record, contentTypeOf("install.json"));
+    }));
+    if (signal?.aborted) throw new RunError("cancelled");
+    const key = installRecordKey(entry.app_id);
+    if (saved === undefined) {
+      const record = installRecord(entry, new Date(), notesWritten);
+      const written = await session.put(key, record, contentTypeOf("install.json"));
       if (written === "exists") throw new RunError("failed", { detail: "saved files changed while opening" });
       entries.set(INSTALL_RECORD_PATH, record);
-      done += 1;
-    }
-    // Notes are create-only: a note already saved is left as it is, so the write result is not checked.
-    for (const file of notes) {
-      if (signal?.aborted) throw new RunError("cancelled");
-      report({ phase: "saving", done, total });
-      await put(installKey(entry.app_id, file.path), file.bytes, contentTypeOf(file.path));
-      done += 1;
+    } else {
+      const record = encodeInstallRecord({ ...saved, notes: notesWritten });
+      await session.replace(key, record, contentTypeOf("install.json"));
+      entries.set(INSTALL_RECORD_PATH, record);
     }
   } catch (error) {
     throw error instanceof RunError ? error : new RunError("failed", { cause: error, detail: "saving the app's files" });
@@ -298,7 +313,7 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     const plan = signInPlan(prepared.manifest, sdk);
     if (prepared.manifest.ok) report({ phase: "disclosing", entry, manifest: prepared.manifest.manifest });
     await session.authorize(entry, plan, sdk);
-    const files = await saveMissing(entry, prepared.bundle, session.files, session.put, report, signal);
+    const files = await saveMissing(entry, prepared.bundle, session.files, session, report, signal);
     if (signal?.aborted) throw new RunError("cancelled");
     report({ phase: "verifying" });
     const verified = await verifyStoredApp(appId, files, {

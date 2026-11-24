@@ -9,7 +9,7 @@
  * browser against a real Node:
  *  - a fresh account opens the Health Log sample from its card: the runner asks one approval, one sign-in,
  *    every file is created only under `<app_id>/app/` and
- *    `<app_id>/knowledge/`, app files first, then install.json, then the notes with `knowledge/index.md` last, and the app is in the account's apps list;
+ *    `<app_id>/knowledge/`, app files first, then the notes, then install.json, and the app is in the account's apps list;
  *  - the signed ReCap is exactly the app's union manifest: get/list/put on `<app_id>/app/`, put on
  *    `<app_id>/knowledge/`, the app's own runtime grants, and the account registry;
  *  - a hand-edited knowledge/app.md survives a later Open of the same app, which runs without overwriting it;
@@ -319,7 +319,7 @@ try {
       assert.equal(stored.files[key].sha256, file.sha256, `${key}: stored bytes equal the catalog's`);
     }
     const record = JSON.parse(stored.files[`${HEALTH}/app/install.json`].text);
-    assert.deepEqual(Object.keys(record).sort(), ["digest", "installed_at", "source"]);
+    assert.deepEqual(Object.keys(record).sort(), ["digest", "installed_at", "notes", "source"]);
     assert.equal(record.digest, health.bundle.digest);
     assert.equal(record.source.commit, health.source.commit);
     // The apps-list record comes from the runtime sign-in's background sync, so it is polled, not read once.
@@ -408,9 +408,10 @@ try {
     const outcome = await finished(page);
     assert.doesNotMatch(outcome.status, /is running\./, "a failed save said the app is running");
     const appFiles = recipes.bundle.files.filter((file) => !file.path.startsWith("knowledge/")).length;
+    const noteFiles = recipes.bundle.files.length - appFiles;
     await captureState(page, "error-partial");
     const midway = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
-    assert.equal(midway.keys.length, appFiles, "the app files are saved and the notes are not, because install.json failed");
+    assert.equal(midway.keys.length, appFiles + noteFiles, "the app files and notes are saved; install.json is not");
     assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was saved despite the failed write");
     controls.failRecord = false;
     await page.reload({ waitUntil: "domcontentloaded" });

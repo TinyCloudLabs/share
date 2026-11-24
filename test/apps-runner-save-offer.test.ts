@@ -261,7 +261,7 @@ describe("the runner page when an app offers a file", () => {
     async signIn(candidate, _plan, hooks): Promise<RunSession> {
       hooks.approval(false);
       const runtime: RuntimeSession = { data, expiresAt: Date.now() + 3_600_000, end: async () => { ended += 1; }, detach: async () => undefined };
-      return { files: storedFiles(candidate, undefined), authorize: async () => undefined, put: async () => "created" as const, runtime };
+      return { files: storedFiles(candidate, undefined), authorize: async () => undefined, put: async () => "created" as const, replace: async () => undefined, runtime };
     },
   });
   const nonceOf = (iframe: HTMLIFrameElement): string => new URL(iframe.src).hash.slice(1);

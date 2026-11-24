@@ -6,8 +6,9 @@ import { describe, expect, it } from "vitest";
 
 import { INSTALL_RECORD_PATH } from "../src/apps/bundle.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
-import { KNOWLEDGE_INDEX, installKey, installOrder, installRecord, installRecordKey } from "../src/apps/install-plan.ts";
+import { encodeInstallRecord, installKey, installOrder, installRecord, installRecordKey, notesVersion } from "../src/apps/install-plan.ts";
 import { type PutResult, type PreparedApp, RunError, type RunPorts, type RunSession, type RuntimeSession, openApp, signInPlan } from "../src/apps/run.ts";
+import { parseInstallRecord } from "../src/apps/stored-app.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
@@ -36,9 +37,10 @@ interface HarnessOptions {
   hasPersistedSession?: boolean;
 }
 
-/** Ports over an in-memory saved copy. `puts` records every create-only write key in order. */
+/** Ports over an in-memory saved copy. `puts` records every create-only write key in order; `replaces` every overwrite. */
 function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {}) {
   const puts: string[] = [];
+  const replaces: string[] = [];
   const reads = { count: 0 };
   const signedPlans: { digest: string; manifest: unknown }[] = [];
   const initialPlans: { digest: string; manifest: unknown }[] = [];
@@ -51,6 +53,10 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
     if (initial.has(path)) return "exists";
     initial.set(path, bytes);
     return "created";
+  };
+  const replace = async (key: string, bytes: Uint8Array): Promise<void> => {
+    replaces.push(key);
+    initial.set(pathOf.get(key) ?? key, bytes);
   };
   const ports: RunPorts = {
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
@@ -74,12 +80,13 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
         files: { entries: new Map(initial) },
         authorize: async (candidate, plan) => { signedPlans.push({ digest: candidate.bundle.digest, manifest: plan.manifest }); },
         put,
+        replace,
         runtime: runtime as unknown as RuntimeSession,
       };
     },
     sdk: async () => sdkCore,
   };
-  return { ports, puts, reads, signedPlans, initialPlans, counts };
+  return { ports, puts, replaces, reads, signedPlans, initialPlans, counts };
 }
 
 describe("installOrder", () => {
@@ -112,9 +119,8 @@ describe("openApp: install on open", () => {
     expect(running.app.entry.bundle.digest).toBe(health.bundle.digest);
     expect(h.reads.count).toBe(1);
     const ordered = installOrder(bundleFiles).map((file) => installKey(HEALTH, file.path));
-    const appCount = bundleFiles.filter((file) => !file.path.startsWith("knowledge/")).length;
-    expect(h.puts).toEqual([...ordered.slice(0, appCount), recordKey, ...ordered.slice(appCount)]);
-    expect(h.puts.at(-1)).toBe(installKey(HEALTH, KNOWLEDGE_INDEX));
+    expect(h.puts).toEqual([...ordered, recordKey]);
+    expect(h.puts.at(-1)).toBe(recordKey);
     expect(h.counts.runtimes).toBe(1);
   });
   it("reopens through the persisted app grant without extra OpenKey approvals", async () => {
@@ -217,12 +223,13 @@ describe("openApp: install on open", () => {
   });
 
 
-  it("complete saved copy: no app-file writes and no install.json rewrite; a missing note is still saved", async () => {
+  it("complete saved copy without a notes version: no app-file writes, install.json is not created again, and the notes are saved once", async () => {
     const h = harness(fullCopy());
     await openApp(HEALTH, h.ports, noop);
     expect(h.reads.count).toBe(1);
     expect(h.puts).not.toContain(recordKey);
     expect(h.puts.filter((key) => appKeys.includes(key))).toEqual([]);
+    expect(h.replaces).toEqual([recordKey]);
     expect(h.counts.runtimes).toBe(1);
   });
 
@@ -332,5 +339,84 @@ describe("openApp: install on open", () => {
     await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "damaged" });
     expect(h.puts).toEqual([]);
     expect(h.counts.runtimes).toBe(0);
+  });
+});
+
+describe("openApp: notes are written once per notes version", () => {
+  const noteKeys = bundleFiles.filter((file) => file.path.startsWith("knowledge/")).map((file) => installKey(HEALTH, file.path));
+  const savedRecord = (copy: Map<string, Uint8Array>) => parseInstallRecord(copy.get(INSTALL_RECORD_PATH)!);
+  const withNotes = (notes: string): Map<string, Uint8Array> => {
+    const copy = fullCopy();
+    const record = parseInstallRecord(copy.get(INSTALL_RECORD_PATH)!)!;
+    copy.set(INSTALL_RECORD_PATH, encodeInstallRecord({ ...record, notes }));
+    return copy;
+  };
+
+  it("a reopen after the first install writes no notes and does not rewrite install.json", async () => {
+    const copy = new Map<string, Uint8Array>();
+    const first = harness(copy);
+    await openApp(HEALTH, first.ports, noop);
+    expect(first.puts.filter((key) => noteKeys.includes(key)).sort()).toEqual([...noteKeys].sort());
+    expect(savedRecord(copy)?.notes).toBe(await notesVersion(health));
+
+    const reopened = harness(copy);
+    await openApp(HEALTH, reopened.ports, noop);
+    expect(reopened.puts).toEqual([]);
+    expect(reopened.replaces).toEqual([]);
+    expect(reopened.counts.runtimes).toBe(1);
+  });
+
+  it("a record of other notes rewrites every note and records the new version, keeping source, digest and date", async () => {
+    const copy = withNotes("0".repeat(64));
+    const before = savedRecord(copy)!;
+    const h = harness(copy);
+    await openApp(HEALTH, h.ports, noop);
+    expect([...h.puts].sort()).toEqual([...noteKeys].sort());
+    expect(h.replaces).toEqual([recordKey]);
+    expect(savedRecord(copy)).toEqual({ ...before, notes: await notesVersion(health) });
+  });
+
+  it("an install.json written before notes were recorded writes the notes once, then records them", async () => {
+    const copy = fullCopy();
+    expect(savedRecord(copy)?.notes).toBeUndefined();
+    const upgraded = harness(copy);
+    await openApp(HEALTH, upgraded.ports, noop);
+    expect([...upgraded.puts].sort()).toEqual([...noteKeys].sort());
+    expect(upgraded.replaces).toEqual([recordKey]);
+    expect(savedRecord(copy)?.notes).toBe(await notesVersion(health));
+
+    const again = harness(copy);
+    await openApp(HEALTH, again.ports, noop);
+    expect(again.puts).toEqual([]);
+    expect(again.replaces).toEqual([]);
+  });
+
+  it("due notes are written all at once, and a failed note write leaves the record without them", async () => {
+    const copy = fullCopy();
+    const h = harness(copy);
+    const signIn = h.ports.signIn;
+    let inFlight = 0;
+    let most = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    h.ports.signIn = async (entry, plan, hooks) => {
+      const session = await signIn(entry, plan, hooks);
+      return {
+        ...session,
+        put: async (key, bytes, contentType) => {
+          inFlight += 1;
+          most = Math.max(most, inFlight);
+          if (most === noteKeys.length) release();
+          await gate;
+          inFlight -= 1;
+          if (key === noteKeys[0]) throw new RunError("failed", { detail: "save failed" });
+          return session.put(key, bytes, contentType);
+        },
+      };
+    };
+    await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "failed" });
+    expect(most).toBe(noteKeys.length);
+    expect(h.replaces).toEqual([]);
+    expect(savedRecord(copy)?.notes).toBeUndefined();
   });
 });

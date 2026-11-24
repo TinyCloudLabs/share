@@ -2,7 +2,7 @@
 
 An app opened from [`/apps/`](apps-catalog.md) is saved in the person's own TinyCloud: its pinned
 files under `<app_id>/app/` (`app.jsx` is its code, `manifest.json` says what it may use), its
-`<app_id>/app/install.json` (`{source, digest, installed_at}`), and any notes under `<app_id>/knowledge/`. The runner opens it: it reads
+`<app_id>/app/install.json` (`{source, digest, installed_at, notes}`, `notes` being the version of the notes written), and any notes under `<app_id>/knowledge/`. The runner opens it: it reads
 those files, restores or obtains the app's own grant, reads the saved version, and runs `app.jsx` in the
 [JSX sandbox](jsx-artifact-sharing.md), where it reaches the person's data only through a small
 message bridge.

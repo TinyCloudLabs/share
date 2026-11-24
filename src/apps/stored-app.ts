@@ -3,7 +3,7 @@
  * the runner may sign in for and run, or says plainly why not. Pure apart from
  * the injected catalog-manifest loader.
  *
- *   <app_id>/app/install.json   what was installed: {source, digest, installed_at} (written by the install)
+ *   <app_id>/app/install.json   what was installed: {source, digest, installed_at, notes?} (written by the install)
  *   <app_id>/app/manifest.json  the person's copy of the manifest (theirs to edit)
  *   <app_id>/app/app.jsx        the person's copy of the code (theirs to edit)
  *
@@ -38,6 +38,8 @@ export interface InstallRecord {
   readonly source: { readonly repo: string; readonly tag: string | null; readonly commit: string };
   readonly digest: string;
   readonly installedAt: string;
+  /** The `notesVersion` of the notes written for this install; absent in a record written before it was kept. */
+  readonly notes?: string;
 }
 
 /** The saved files under `<app_id>/app/`, keyed by path relative to it (`app.jsx`, `manifest.json`, `install.json`, ...). */
@@ -112,7 +114,7 @@ function parseJson(bytes: Uint8Array, limit: number): unknown {
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** `{source:{repo,tag,commit}, digest, installed_at}` as the install writes it; null for anything else. */
+/** `{source:{repo,tag,commit}, digest, installed_at, notes?}` as the install writes it; null for anything else. A `notes` that is not a sha256 is left out, so the notes are written again. */
 export function parseInstallRecord(bytes: Uint8Array): InstallRecord | null {
   let json: unknown;
   try { json = parseJson(bytes, MAX_INSTALL_RECORD_BYTES); } catch { return null; }
@@ -125,7 +127,8 @@ export function parseInstallRecord(bytes: Uint8Array): InstallRecord | null {
   if (typeof commit !== "string" || !COMMIT.test(commit)) return null;
   if (typeof digest !== "string" || !HEX64.test(digest)) return null;
   if (typeof installedAt !== "string" || installedAt.length > 40) return null;
-  return { source: { repo, tag, commit }, digest, installedAt };
+  const notes = json["notes"];
+  return { source: { repo, tag, commit }, digest, installedAt, ...(typeof notes === "string" && HEX64.test(notes) ? { notes } : {}) };
 }
 
 export async function verifyStoredApp(appId: string, files: StoredFiles, deps: VerifyDeps): Promise<{ ok: true; app: RunnableApp } | { ok: false; failure: StoredAppFailure }> {
