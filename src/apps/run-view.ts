@@ -84,7 +84,7 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
     case "busy": return { title: "Another OpenKey request is waiting", lines: ["Finish or cancel it, then try again."], retry: OPEN_AGAIN(name) };
     case "wrong-account": return { title: "That approval came from a different account", lines: ["It wasn't the account that signed in, so nothing was started."], retry: OPEN_AGAIN(name), tone: "danger" };
     case "setup-required": {
-      const setupHref = httpsUrl(detail);
+      const setupHref = setupAddress(detail);
       return {
         title: "Finish setting up your TinyCloud account",
         lines: ["This account isn't set up yet, so apps can't open in it. Nothing was started."],
@@ -95,9 +95,12 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
   }
 }
 
-/** `value` when it is an https address, so a link never gets another scheme. */
-function httpsUrl(value: string | undefined): string | undefined {
-  return value !== undefined && URL.canParse(value) && new URL(value).protocol === "https:" ? value : undefined;
+/** TinyCloud's account setup pages: the SDK's `setupUrl` (tinycloud.one) and the setup app OpenKey's guide names. */
+const SETUP_ORIGINS: readonly string[] = ["https://tinycloud.one", "https://home.tinycloud.xyz"];
+
+/** `value` only when it is on a TinyCloud setup origin, so a thrown value can't make the link point anywhere else. */
+function setupAddress(value: string | undefined): string | undefined {
+  return value !== undefined && URL.canParse(value) && SETUP_ORIGINS.includes(new URL(value).origin) ? value : undefined;
 }
 
 /** Status line for each step of an open. */

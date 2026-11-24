@@ -399,8 +399,8 @@ describe("opening an app that cannot run", () => {
     expect(fake.runtimes).toBe(0);
   });
 
-  it("never links a setup address that isn't https", () => {
-    expect(failureScreen("setup-required", "X", "javascript:alert(1)").setupHref).toBeUndefined();
+  it.each(["javascript:alert(1)", "http://tinycloud.one/", "https://tinycloud.one.example/", "https://evil.example/setup"])("never links a setup address off TinyCloud's setup origins (%s)", (address) => {
+    expect(failureScreen("setup-required", "X", address).setupHref).toBeUndefined();
   });
 
 
