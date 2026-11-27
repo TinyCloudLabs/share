@@ -34,8 +34,6 @@ function shareRouteRewrite(): Plugin {
     const path = (url ?? "").split("?", 1)[0] ?? "";
     if (path === "/share") return "/share/index.html";
     if (path === "/viewer") return "/viewer/index.html";
-    if (path === "/apps") return "/apps/index.html";
-    if (path === "/apps/run") return "/apps/run/index.html";
     if (path === "/courier") return "/courier/index.html";
     if (path.startsWith("/s/") || path.startsWith("/c/")) return "/viewer/index.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
@@ -177,7 +175,7 @@ function userContentOriginPolicy(userContentOrigin: string): Plugin {
     configResolved(resolved) { config = resolved; },
     transformIndexHtml: {
       order: "pre",
-      handler: (html, ctx) => /\/(?:viewer|courier)\/index\.html$/.test(ctx.filename) || ctx.filename.endsWith("/apps/run/index.html")
+      handler: (html, ctx) => /\/(?:viewer|courier)\/index\.html$/.test(ctx.filename)
         ? html.replace(/(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")/, (_match, open: string, csp: string, close: string) => `${open}${withUserContentOrigin(csp, userContentOrigin)}${close}`)
         : html,
     },
@@ -310,8 +308,6 @@ export default defineConfig(({ mode }) => {
           howItWorks: fileURLToPath(new URL("how-it-works.html", import.meta.url)),
           share: fileURLToPath(new URL("share/index.html", import.meta.url)),
           viewer: fileURLToPath(new URL("viewer/index.html", import.meta.url)),
-          apps: fileURLToPath(new URL("apps/index.html", import.meta.url)),
-          appsRun: fileURLToPath(new URL("apps/run/index.html", import.meta.url)),
           courier: fileURLToPath(new URL("courier/index.html", import.meta.url)),
         },
       },

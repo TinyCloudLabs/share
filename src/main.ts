@@ -1,5 +1,6 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
 import { purgeLegacyReceiverStorage } from "./email-share/receiver-storage.js";
+import { clearRetiredAppSignIns } from "./share/retired-app-sign-ins.js";
 import type { ResolveResult } from "./viewer/resolve.js";
 import { LinkReadError } from "./short-links/resolve.js";
 import { linksApiOrigin } from "./short-links/config.js";
@@ -40,6 +41,8 @@ if (viewerRoot !== null) {
   const captured = captureLaunch();
   // Drop a receiver key record an earlier build left in this tab before anything else can read it.
   purgeLegacyReceiverStorage();
+  // ...and the sign-ins the retired app runner left in this browser.
+  clearRetiredAppSignIns();
   void loadViewerStyles();
   void bootRecipient(viewerRoot, captured);
   // A second share opened by hash-only navigation doesn't reload this module:
