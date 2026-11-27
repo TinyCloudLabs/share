@@ -1,7 +1,6 @@
 /**
  * The names the shared sign-in puts in front of a person (`appName` in OpenKey's window and the sign-in statement,
- * `sessionPrefix`): what they may contain. A tiny module of its own so a caller that builds a name from untrusted
- * data (an app catalog) can ask `isSignInLabel` first and fall back to a fixed name, without loading OpenKey.
+ * `sessionPrefix`): what they may contain. A tiny module of its own, so it loads without OpenKey.
  */
 
 import { hasInvisibleOrSpecialSpace } from "./invisible-text.mjs";
@@ -49,10 +48,4 @@ export function checkLabel(option: string, value: string): void {
   if (hasInvisibleOrSpecialSpace(value)) throw new SignInOptionError(option, "no control, invisible, direction or special space characters");
   if (value.startsWith(" ") || value.endsWith(" ") || value.includes("  ")) throw new SignInOptionError(option, "no leading, trailing or repeated spaces");
   if (looksLikeLink(value)) throw new SignInOptionError(option, "must not look like a link or an address");
-}
-
-
-/** True when `value` is acceptable as an `appName` (see `checkLabel`). */
-export function isSignInLabel(value: string): boolean {
-  try { checkLabel("appName", value); return true; } catch { return false; }
 }

@@ -56,8 +56,6 @@ export function clearRenewalReceipt(prefix: string, storage?: Pick<Storage, "rem
  * (the library sign-in opens encrypted shares; renewal is the owner's choice, never the default).
  */
 export const SIGN_IN_RENEWAL_ASK = { version: 1, leaseLifetimeSeconds: 90 * 24 * 60 * 60 } as const;
-/** The same ask as a standing purpose (an app's ongoing access): OpenKey's box starts ticked when the request needs no sensitive confirm; the owner can untick it. */
-export const STANDING_RENEWAL_ASK = { ...SIGN_IN_RENEWAL_ASK, purpose: "standing" } as const;
 
 /** The lease receipt in an `authorizeTinyCloud` result, only when the owner left renewal on (`renewalChoice: "leased"`); otherwise undefined. Unverified. */
 export function leaseFromApproval(result: unknown): unknown {
