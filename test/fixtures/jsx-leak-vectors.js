@@ -1,6 +1,6 @@
 // Every way a page in the sandbox could make the BROWSER ask a loopback listener for something. Each vector builds a
 // URL under BASE (`/v/<name>?d=<marker>`, the marker standing for data the page read) and tries; the e2e tests
-// (test/e2e-jsx.mjs for a shared page, test/e2e-prod/runner-gate.mjs for an installed app) assert that the listener saw
+// (test/e2e-jsx.mjs for a shared page) assert that the listener saw
 // NOTHING: no HTTP request, no TCP connection, no UDP packet. Plain script, no imports: it is spliced into fixtures.
 //
 // `navigation` vectors (the page tries to navigate itself) are the ones measured to still open a connection and look up the

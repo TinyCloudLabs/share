@@ -207,7 +207,7 @@ Undo:
 | `test/fixtures/tc-405-compact-authorization.json` (deleted) | jwt | test UCANs between test `did:key`s, expired 2026-07-31 |
 | `test/fixtures/links-api-vectors.json`, `worker/links-api/test/vectors/short-links-api-vectors.json` | generic-api-key | links-api test vectors (`secretSha256` of a test value, test `did:key`s) |
 | `test/composer-*.test.ts`, `test/sharing-composer*.test.ts`, `test/tc1741-custom-expiry.test.ts` | generic-api-key | `openKeyAddress`: test Ethereum addresses (public) |
-| `test/library-renewal-candidate.test.ts`, `test/e2e-sharing/failure-diagnostic.test.mjs`, `test/apps-run-session.test.ts`, `test/fixtures/courier-seed/seed.ts` | generic-api-key | named synthetic values (`syntheticKey`, `FAKE_AUTH_DIGEST`) and test `did:key`s |
+| `test/library-renewal-candidate.test.ts`, `test/e2e-sharing/failure-diagnostic.test.mjs`, `test/apps-run-session.test.ts` (deleted; its fingerprint stays because the scan reads history), `test/fixtures/courier-seed/seed.ts` | generic-api-key | named synthetic values (`syntheticKey`, `FAKE_AUTH_DIGEST`) and test `did:key`s |
 | `.release-evidence/*.json`, `test/e2e-prod/native-stack.mjs`, `test/e2e-email/integration.mjs` | generic-api-key | commit and deployment digests of OpenCredentials and Node (public pins) |
 | `.github/workflows/share-api-docker-smoke.yml` (deleted) | generic-api-key | container image reference and the production policy enforcer `did:key` (public) |
 

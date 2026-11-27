@@ -67,7 +67,7 @@ describe("TinyCloud One framing of /courier", () => {
   it("every other route's frame policy is unchanged", () => {
     const rules = parseProductionHeaders(template);
     // The site-wide policy refuses framing: the landing page, the share viewer and /c/* viewer routes, /how-it-works, and look-alike paths.
-    for (const path of ["/", "/s/abc", "/c/abc", "/viewer", "/share", "/apps", "/apps/run", "/how-it-works", "/courier-x", "/couriers/", "/x/courier"]) {
+    for (const path of ["/", "/s/abc", "/c/abc", "/viewer", "/share", "/how-it-works", "/courier-x", "/couriers/", "/x/courier"]) {
       const headers = productionHeadersForPath(rules, path);
       expect(directive(headers["content-security-policy"] ?? "", "frame-ancestors"), path).toEqual(["'none'"]);
       expect(headers["x-frame-options"], path).toBeUndefined();

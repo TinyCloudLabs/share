@@ -1,12 +1,15 @@
 import "../email-share/sender.css";
 import "./courier.css";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+import { clearRetiredAppSignIns } from "../share/retired-app-sign-ins.js";
 import { mountCourier } from "./app.js";
 import { connectEmbedded, type EmbeddedCourier } from "./embedded.js";
 import type { SignInProgress } from "./session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
+// ...and the sign-ins the retired app runner left in this browser.
+clearRetiredAppSignIns();
 
 /**
  * Markdown from the mailbox goes through Share's one sanitising pipeline (raw

@@ -9,6 +9,7 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+import { clearRetiredAppSignIns } from "./retired-app-sign-ins.js";
 import { forgetLibraryAccount, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
 import { NETWORK_SETUP_DECLINED } from "./history-copy.js";
 import { NetworkSetupDeclinedError } from "./network-setup-declined.js";
@@ -16,6 +17,8 @@ import { StaleSessionError } from "./stale-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
+// ...and the sign-ins the retired app runner left in this browser.
+clearRetiredAppSignIns();
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";

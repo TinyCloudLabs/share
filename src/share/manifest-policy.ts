@@ -1,8 +1,8 @@
 /**
  * What a manifest may ask for before `signInWithManifest` lets it near OpenKey.
  *
- * The sign-in helper is reusable: Share's library, the viewer's "Save a copy"
- * and (next) an app-install flow all pass it a manifest. A manifest is the
+ * The sign-in helper is reusable: Share's library and the viewer's "Save a copy"
+ * both pass it a manifest. A manifest is the
  * list of things the person is asked to approve in one signature, so a
  * manifest that is too broad is a broad grant on the person's account. The SDK
  * accepts a manifest that asks for `*` on every service, or for delegation
@@ -17,7 +17,6 @@
  */
 import { manifestUsesOwnerPlaceholder, pkhDid, resolveManifest, resolveManifestOwner, type Manifest, type ResourceCapability } from "@tinycloud/sdk-core";
 import { getAddress } from "viem";
-import { runnerSealingKey } from "../apps/seal-key.js";
 
 /** The delegation namespace, however it is cased. */
 const DELEGATION = /^(?:tinycloud\.)?delegation$/i;
@@ -56,8 +55,6 @@ export type ScopedPrefix = string | { readonly space: string; readonly prefix: s
 
 /** What one caller says its manifest may ask for. Everything not listed is refused. */
 export interface ManifestScope {
-  /** The runner's exact manifest.keys declaration, which the generic SDK resolver does not emit. */
-  readonly allowedRunnerKeyPath?: string;
   /** Spaces the manifest may name. Omitted: only the manifest's own `space`. A space-wide `tinycloud.capabilities` read is allowed only in these too. */
   readonly allowedSpaces?: readonly string[];
   /** Services (`tinycloud.kv`, or `kv`). Omitted: kv, sql and vault. `capabilities` (read) is allowed in `allowedSpaces` without being named; `delegation` only if named here AND by a qualified entry in `allowedActions`. */
@@ -156,11 +153,8 @@ function describe(resource: ResourceCapability): string {
  * to check the shape first.
  */
 export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, address: string): void {
-  if (manifest.keys !== undefined || manifest.keys_app_id !== undefined || scope.allowedRunnerKeyPath !== undefined) {
-    const key = runnerSealingKey(manifest);
-    if (key === null || key !== scope.allowedRunnerKeyPath) {
-      throw new ManifestRejectedError("path-not-allowed", "the app key is outside the declared scope");
-    }
+  if (manifest.keys !== undefined || manifest.keys_app_id !== undefined) {
+    throw new ManifestRejectedError("path-not-allowed", "a manifest that declares keys is refused");
   }
   let resolved: ReturnType<typeof resolveManifest>;
   try {

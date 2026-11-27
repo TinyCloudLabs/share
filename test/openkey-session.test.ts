@@ -20,7 +20,6 @@ import {
   signInWithManifest,
   type ApprovalGuard,
 } from "../src/share/openkey-session.js";
-import { isSignInLabel } from "../src/share/sign-in-label.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { ManifestRejectedError, SDK_ACCOUNT_REGISTRY_RESOURCES, type ManifestScope } from "../src/share/manifest-policy.js";
 import { signInToCourier } from "../src/courier/session.ts";
@@ -302,53 +301,6 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(state.clients[0]!.config.persistSession).toBe(false);
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
-  });
-
-  it("reports the session's signed expiry, not a fresh hour: a restored session keeps its remaining time", async () => {
-    const expiring = new Date(Date.now() + 10 * 60 * 1000);
-    state.signInSiwe = `share.example wants you to sign in\nExpiration Time: ${expiring.toISOString()}`;
-    const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a" });
-    expect(signedIn.sessionExpiresAt).toBe(expiring.getTime());
-  });
-  it("restores a covered app session before OpenKey and opens one approval only on the fresh install", async () => {
-    state.simulateSignInApproval = true;
-    const options = {
-      manifest: APP_MANIFEST,
-      config: CONFIG,
-      persistSession: true,
-      includeAccountRegistryPermissions: false,
-      autoCreateSpace: false,
-      sessionPrefix: "tinycloud-share-runner-test",
-      restoreBeforeOpenKey: true,
-    };
-    const first = await signInWithManifest(options);
-    expect(state.openKeyRequests).toBe(1);
-    expect(state.signed).toHaveLength(1);
-    expect(state.clients[0]!.order).toEqual(["restoreSession", "connectWallet", "signIn"]);
-    await first.detach();
-
-    const reopened = await signInWithManifest(options);
-    expect(state.openKeyRequests).toBe(1);
-    expect(state.signed).toHaveLength(1);
-    expect(state.clients[1]!.order).toEqual(["restoreSession", "signIn"]);
-    await reopened.detach();
-  });
-
-
-  it("reports a full session when the sign-in's SIWE carries no expiry", async () => {
-    state.signInSiwe = "share.example wants you to sign in";
-    const before = Date.now();
-    const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, expiry: 60_000 });
-    expect(signedIn.sessionExpiresAt).toBeGreaterThanOrEqual(before + 60_000);
-    expect(signedIn.sessionExpiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
-  });
-
-  it("detach closes the OpenKey connection it opened without signing out: a persisted session survives page unload", async () => {
-    const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true });
-    await signedIn.detach();
-    await signedIn.detach();
-    expect(state.openKeys[0]!.disconnects).toBe(1);
-    expect(state.clients[0]!.signedOut).toBe(0);
   });
 
   it("reuses an OpenKey connection that already exists instead of opening OpenKey again", async () => {
@@ -707,12 +659,6 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName });
     expect(state.clients.at(-1)!.config.siweConfig).toEqual({ statement: `Sign in to ${appName}.` });
     expect(state.openKeys.at(-1)!.appName).toBe(appName);
-  });
-
-  it("isSignInLabel says, without opening anything, what the helper would accept as an appName", () => {
-    for (const ok of ["TinyCloud Share: install Tiny Notes", "Install v1.2", "Notes 📓"]) expect(isSignInLabel(ok), ok).toBe(true);
-    for (const bad of ["Node.js Notes", "Notes\u200b", "evil.com", "Notes ", "x".repeat(65), ""]) expect(isSignInLabel(bad), bad).toBe(false);
-    expect(state.openKeys).toEqual([]);
   });
 
   it.each(["a/b", "a b", "../x", "x".repeat(65), "", "a\nb", "https://x", "a:b", "ünï", "a\u200bb", "a.b.com", " a", "a "])("refuses a sessionPrefix of %j", async (sessionPrefix) => {
