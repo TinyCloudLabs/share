@@ -6,8 +6,7 @@
  * `blob:` only), but no CSP directive governs a few browser-initiated requests: `<link rel=prerender>` /
  * `prefetch` send a GET with whatever query the page chose, `<link rel=preconnect>` opens a connection,
  * `<link rel=dns-prefetch>` resolves a name, `<a ping>` posts to a URL, WebRTC sends STUN packets. For a page a
- * stranger shared that leaks little (the author already has what the page knows). For an installed app it can
- * carry the person's own data, read through the app's grants, to a host the app's author chose.
+ * stranger shared that leaks little (the author already has what the page knows).
  *
  * What this does (best effort; it cannot be a boundary, because the page's code runs in the same realm):
  *  - a URL is SAFE only if it is empty, `#...`, `data:` or `blob:`. Anything else (including a relative URL, which
@@ -34,7 +33,7 @@
  *  - `RTCPeerConnection` is removed.
  * Best effort: these paths are known closed, and code in the same realm may find others (a MutationObserver runs
  * after the browser has already started a prerender or preconnect). The page says so; the measured leaks are in
- * docs/tiny-app-runner.md.
+ * docs/jsx-artifact-sharing.md.
  */
 
 const SAFE_URL = /^(?:#|data:|blob:)/i;

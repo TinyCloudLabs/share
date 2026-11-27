@@ -16,8 +16,8 @@
         ...import.meta.glob("/test/fixtures/jsx/*.jsx", { query: "?raw", import: "default", eager: true }),
         ...import.meta.glob("/test/fixtures/html/*.html", { query: "?raw", import: "default", eager: true }),
       };
-      // The shared leak-vector script (also spliced into the installed-app hostile fixture by the runner gate).
-      const leakVectors = Object.values(import.meta.glob("/test/fixtures/apps/leak-vectors.js", { query: "?raw", import: "default", eager: true }))[0] ?? "";
+      // The shared leak-vector script, spliced into the leak-vectors fixture.
+      const leakVectors = Object.values(import.meta.glob("/test/fixtures/jsx-leak-vectors.js", { query: "?raw", import: "default", eager: true }))[0] ?? "";
       const params = new URLSearchParams(location.search);
       const name = params.get("f") ?? "counter.jsx";
       const path = Object.keys(fixtures).find((key) => key.endsWith(`/${name}`));
